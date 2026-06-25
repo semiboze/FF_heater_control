@@ -1,13 +1,14 @@
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiMulti.h> 
 #include <WebServer.h>
 #include <ESPmDNS.h> 
 #include <Preferences.h>
 #include <DHT.h>
-#include "secret.h" // 【追加】外部化したWi-Fi情報の読み込み
+#include "secret.h" 
 
-// ==================== 【要設定】Wi-Fi接続先の複数登録 ====================
-WiFiMulti wifiMulti;
+// ==================== Wi-Fi設定 ====================
+WiFiMulti wifiMulti; 
 
 // ==================== ピンアサイン（無印ESP32 38PIN準拠） ====================
 const int PIN_PC_BTN1 = 25; 
@@ -83,10 +84,10 @@ void handleRoot() {
     html += "<title>FF Heater Remote</title></head><body>";
     
     html += "<div class='card'><h2>手動リモコン操作</h2>";
-    html += "<a href='/trigger?btn=1' class='btn'>ボタン1 (ON)</a>";
-    html += "<a href='/trigger?btn=2' class='btn'>ボタン2 (OFF)</a>";
-    html += "<a href='/trigger?btn=3' class='btn'>ボタン3 (UP)</a>";
-    html += "<a href='/trigger?btn=4' class='btn'>ボタン4 (DOWN)</a>";
+    html += "<a href='/trigger?btn=1' class='btn'>ボタン1 (電源)</a>";
+    html += "<a href='/trigger?btn=2' class='btn'>ボタン2</a>";
+    html += "<a href='/trigger?btn=3' class='btn'>ボタン3</a>";
+    html += "<a href='/trigger?btn=4' class='btn'>ボタン4</a>";
     html += "</div>";
     
     html += "<div class='card'><h2>現在のステータス</h2>";
@@ -102,33 +103,32 @@ void handleRoot() {
     String stateStr[] = {"停止中(OFF)", "点火確認中", "運転中(ON)"};
     html += "<p>ヒーター仮想状態: <strong>" + stateStr[currentHeaterState] + "</strong></p></div>";
     
-    // 【設定変更フォーム】確実なセレクト連動MMIに完全リプレース
     html += "<div class='card'><h2>自動制御設定</h2><form action='/save' method='POST'>";
     
-    // 1. タイマー時間 (1時間単位の選択肢 + 自由入力)
+    // 1. タイマー時間（ガード処理追加）
     html += "<p>タイマー時間: <input type='number' id='idx_duration' name='duration' value='" + String(autoModeMinutes) + "'> 分 ";
-    html += "<select onchange=\"document.getElementById('idx_duration').value=this.value; this.selectedIndex=0;\">";
+    html += "<select onchange=\"if(this.value){document.getElementById('idx_duration').value=this.value;}; this.selectedIndex=0;\">";
     html += "<option value='' disabled selected>選択...</option>";
-    html += "<option value='60'>1時間</option><option value='120'>2時間</option><option value='180'>3時間</option><option value='240'>4時間</option><option value='300'>5時間</option><option value='360'>6時間</option>";
+    html += "<option value='60'>1時間</option><option value='120'>2時間</option><option value='180'>3時間</option><option value='240'>4時間</option><option value='300'>5時間</option><option value='360'>6時間</option><option value='420'>7時間</option><option value='480'>8時間</option><option value='540'>9時間</option><option value='600'>10時間</option><option value='660'>11時間</option><option value='720'>12時間</option>";
     html += "</select></p>";
     
-    // 2. ONトリガー温度 (5℃〜30℃まで1℃刻みの選択肢 + 自由入力)
+    // 2. ONトリガー温度（ガード処理追加）
     html += "<p>ONトリガー温度: <input type='number' step='0.1' id='idx_ontemp' name='ontemp' value='" + String(targetOnTemp, 1) + "'> ℃ ";
-    html += "<select onchange=\"document.getElementById('idx_ontemp').value=this.value; this.selectedIndex=0;\">";
+    html += "<select onchange=\"if(this.value){document.getElementById('idx_ontemp').value=this.value;}; this.selectedIndex=0;\">";
     html += "<option value='' disabled selected>選択...</option>";
     for (int t = 5; t <= 30; t++) { html += "<option value='" + String(t) + "'>" + String(t) + "℃</option>"; }
     html += "</select> (天井)</p>";
     
-    // 3. OFFトリガー温度 (5℃〜30℃まで1℃刻みの選択肢 + 自由入力)
+    // 3. OFFトリガー温度（ガード処理追加）
     html += "<p>OFFトリガー温度: <input type='number' step='0.1' id='idx_offtemp' name='offtemp' value='" + String(targetOffTemp, 1) + "'> ℃ ";
-    html += "<select onchange=\"document.getElementById('idx_offtemp').value=this.value; this.selectedIndex=0;\">";
+    html += "<select onchange=\"if(this.value){document.getElementById('idx_offtemp').value=this.value;}; this.selectedIndex=0;\">";
     html += "<option value='' disabled selected>選択...</option>";
     for (int t = 5; t <= 30; t++) { html += "<option value='" + String(t) + "'>" + String(t) + "℃</option>"; }
     html += "</select> (天井)</p>";
     
-    // 4. 点火判定温度上昇値 (2℃〜15℃まで1℃刻みの選択肢 + 自由入力)
+    // 4. 点火判定温度上昇値（ガード処理追加）
     html += "<p>点火判定温度上昇値: <input type='number' step='0.1' id='idx_ductthresh' name='ductthresh' value='" + String(ductThreshTemp, 1) + "'> ℃ ";
-    html += "<select onchange=\"document.getElementById('idx_ductthresh').value=this.value; this.selectedIndex=0;\">";
+    html += "<select onchange=\"if(this.value){document.getElementById('idx_ductthresh').value=this.value;}; this.selectedIndex=0;\">";
     html += "<option value='' disabled selected>選択...</option>";
     for (int t = 2; t <= 15; t++) { html += "<option value='" + String(t) + "'>" + String(t) + "℃</option>"; }
     html += "</select> (ダクト)</p>";
@@ -213,7 +213,7 @@ void setup() {
     ductThreshTemp = prefs.getFloat("ductthresh", 5.0);
     
     WiFi.mode(WIFI_STA);
-    registerWiFiNetworks();
+    registerWiFiNetworksMulti(wifiMulti); 
     
     Serial.println("Scanning and connecting to available WiFi...");
     
@@ -244,6 +244,30 @@ void setup() {
 
 // ==================== メインループ ====================
 void loop() {
+    // ---- Wi-Fi自動再接続処理（ノンブロッキング） ----
+    static unsigned long lastWiFiCheck = 0;
+    static bool wasConnected = true;
+
+    if (millis() - lastWiFiCheck >= 5000) { 
+        lastWiFiCheck = millis();
+        
+        if (wifiMulti.run() != WL_CONNECTED) {
+            if (wasConnected) {
+                Serial.println("Warning: Wi-Fi切断を検知。再接続を試みています...");
+                wasConnected = false;
+            }
+        } else {
+            if (!wasConnected) {
+                Serial.println("Wi-Fi再接続に成功しました。");
+                Serial.print("IPアドレス: ");
+                Serial.println(WiFi.localIP());
+                MDNS.announce();
+                wasConnected = true;
+            }
+        }
+    }
+    // -----------------------------------------------
+
     server.handleClient(); 
     updateButtonPulses();  
     
