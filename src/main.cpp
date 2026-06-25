@@ -10,11 +10,32 @@
 // ==================== Wi-Fi設定 ====================
 WiFiMulti wifiMulti; 
 
-// ==================== ピンアサイン（無印ESP32 38PIN準拠） ====================
-const int PIN_PC_BTN1 = 25; 
-const int PIN_PC_BTN2 = 26; 
-const int PIN_PC_BTN3 = 27; 
-const int PIN_PC_BTN4 = 32; 
+// ==================== ピン・ボタン定義 ====================
+enum ButtonType {
+    BTN_ON,
+    BTN_OFF,
+    BTN_UP,
+    BTN_DOWN
+};
+
+// 30PIN開発ボード準拠のピンアサイン
+struct ButtonPulse {
+    int pin;
+    String label;
+    unsigned long turnOffTime;
+    bool isPinHigh;
+    int pressCount;
+    unsigned long nextPressTime;
+};
+
+// ここを書き換えるだけでピンやWeb画面の名称変更が可能
+ButtonPulse buttons[] = {
+    {25, "電源ON",   0, false, 0, 0}, // BTN_ON
+    {32, "電源OFF",  0, false, 0, 0}, // BTN_OFF
+    {26, "温度上げ", 0, false, 0, 0}, // BTN_UP
+    {27, "温度下げ", 0, false, 0, 0}  // BTN_DOWN
+};
+const int BUTTON_COUNT = sizeof(buttons) / sizeof(ButtonPulse);
 
 const int PIN_DHT_ROOM = 13; 
 const int PIN_DHT_DUCT = 14; 
@@ -44,36 +65,44 @@ unsigned long ignitionStartTime = 0;
 float ignitionStartDuctTemp = 0.0;
 const unsigned long IGNITION_TIMEOUT_MS = 300000; 
 
-struct ButtonPulse {
-    int pin;
-    unsigned long turnOffTime;
-    bool isActive;
-};
-ButtonPulse buttons[4] = {
-    {PIN_PC_BTN1, 0, false},
-    {PIN_PC_BTN2, 0, false},
-    {PIN_PC_BTN3, 0, false},
-    {PIN_PC_BTN4, 0, false}
-};
-
 float currentRoomTemp = 0.0;
 float currentDuctTemp = 0.0;
 
 // ==================== 関数定義 ====================
 
-void triggerButton(int buttonIndex, unsigned long durationMs = 500) {
-    if (buttonIndex < 0 || buttonIndex >= 4) return;
-    digitalWrite(buttons[buttonIndex].pin, HIGH);
-    buttons[buttonIndex].turnOffTime = millis() + durationMs;
-    buttons[buttonIndex].isActive = true;
+// 指定されたボタンのパルス生成シーケンスを開始する（ノンブロッキング）
+void triggerButton(ButtonType btn) {
+    if (buttons[btn].pressCount > 0) return; // すでに処理中なら無視
+    
+    // ON/OFFなら2回、それ以外（上げ下げ）なら1回押す仕様を自動判別
+    if (btn == BTN_ON || btn == BTN_OFF) {
+        buttons[btn].pressCount = 2;
+    } else {
+        buttons[btn].pressCount = 1;
+    }
+    buttons[btn].nextPressTime = millis(); // 即座に1回目を開始
 }
 
+// loop内で毎サイクル呼び出され、パルスタイミングと連打間隔（1秒）を制御
 void updateButtonPulses() {
     unsigned long currentMillis = millis();
-    for (int i = 0; i < 4; i++) {
-        if (buttons[i].isActive && currentMillis >= buttons[i].turnOffTime) {
+    
+    for (int i = 0; i < BUTTON_COUNT; i++) {
+        // ピンが現在HIGHで、通電時間を過ぎたらLOWに戻す
+        if (buttons[i].isPinHigh && currentMillis >= buttons[i].turnOffTime) {
             digitalWrite(buttons[i].pin, LOW);
-            buttons[i].isActive = false;
+            buttons[i].isPinHigh = false;
+            
+            // 次回押すまでのインターバル（1秒 = 1000ms）をセット
+            buttons[i].nextPressTime = currentMillis + 1000;
+        }
+        
+        // まだ押す回数が残っており、インターバル時間を経過していればピンをHIGHにする
+        if (!buttons[i].isPinHigh && buttons[i].pressCount > 0 && currentMillis >= buttons[i].nextPressTime) {
+            digitalWrite(buttons[i].pin, HIGH);
+            buttons[i].isPinHigh = true;
+            buttons[i].turnOffTime = currentMillis + 500; // パルス幅 500ms
+            buttons[i].pressCount--;                      // 残り回数を減らす
         }
     }
 }
@@ -84,10 +113,10 @@ void handleRoot() {
     html += "<title>FF Heater Remote</title></head><body>";
     
     html += "<div class='card'><h2>手動リモコン操作</h2>";
-    html += "<a href='/trigger?btn=1' class='btn'>ボタン1 (電源)</a>";
-    html += "<a href='/trigger?btn=2' class='btn'>ボタン2</a>";
-    html += "<a href='/trigger?btn=3' class='btn'>ボタン3</a>";
-    html += "<a href='/trigger?btn=4' class='btn'>ボタン4</a>";
+    // 構造体配列から動的にボタンを生成（直しやすい構成）
+    for (int i = 0; i < BUTTON_COUNT; i++) {
+        html += "<a href='/trigger?btn=" + String(i) + "' class='btn'>" + buttons[i].label + "</a>";
+    }
     html += "</div>";
     
     html += "<div class='card'><h2>現在のステータス</h2>";
@@ -105,28 +134,24 @@ void handleRoot() {
     
     html += "<div class='card'><h2>自動制御設定</h2><form action='/save' method='POST'>";
     
-    // 1. タイマー時間（ガード処理追加）
     html += "<p>タイマー時間: <input type='number' id='idx_duration' name='duration' value='" + String(autoModeMinutes) + "'> 分 ";
     html += "<select onchange=\"if(this.value){document.getElementById('idx_duration').value=this.value;}; this.selectedIndex=0;\">";
     html += "<option value='' disabled selected>選択...</option>";
     html += "<option value='60'>1時間</option><option value='120'>2時間</option><option value='180'>3時間</option><option value='240'>4時間</option><option value='300'>5時間</option><option value='360'>6時間</option><option value='420'>7時間</option><option value='480'>8時間</option><option value='540'>9時間</option><option value='600'>10時間</option><option value='660'>11時間</option><option value='720'>12時間</option>";
     html += "</select></p>";
     
-    // 2. ONトリガー温度（ガード処理追加）
     html += "<p>ONトリガー温度: <input type='number' step='0.1' id='idx_ontemp' name='ontemp' value='" + String(targetOnTemp, 1) + "'> ℃ ";
     html += "<select onchange=\"if(this.value){document.getElementById('idx_ontemp').value=this.value;}; this.selectedIndex=0;\">";
     html += "<option value='' disabled selected>選択...</option>";
     for (int t = 5; t <= 30; t++) { html += "<option value='" + String(t) + "'>" + String(t) + "℃</option>"; }
     html += "</select> (天井)</p>";
     
-    // 3. OFFトリガー温度（ガード処理追加）
     html += "<p>OFFトリガー温度: <input type='number' step='0.1' id='idx_offtemp' name='offtemp' value='" + String(targetOffTemp, 1) + "'> ℃ ";
     html += "<select onchange=\"if(this.value){document.getElementById('idx_offtemp').value=this.value;}; this.selectedIndex=0;\">";
     html += "<option value='' disabled selected>選択...</option>";
     for (int t = 5; t <= 30; t++) { html += "<option value='" + String(t) + "'>" + String(t) + "℃</option>"; }
     html += "</select> (天井)</p>";
     
-    // 4. 点火判定温度上昇値（ガード処理追加）
     html += "<p>点火判定温度上昇値: <input type='number' step='0.1' id='idx_ductthresh' name='ductthresh' value='" + String(ductThreshTemp, 1) + "'> ℃ ";
     html += "<select onchange=\"if(this.value){document.getElementById('idx_ductthresh').value=this.value;}; this.selectedIndex=0;\">";
     html += "<option value='' disabled selected>選択...</option>";
@@ -172,7 +197,7 @@ void handleToggleAuto() {
         } else {
             autoModeActive = false;
             if (currentHeaterState != HEATER_OFF) {
-                triggerButton(0); 
+                triggerButton(BTN_OFF); // トグルから明示的なOFFへ変更
                 currentHeaterState = HEATER_OFF;
             }
         }
@@ -183,8 +208,10 @@ void handleToggleAuto() {
 
 void handleTrigger() {
     if (server.hasArg("btn")) {
-        int btnNum = server.arg("btn").toInt();
-        triggerButton(btnNum - 1); 
+        int btnIdx = server.arg("btn").toInt();
+        if (btnIdx >= 0 && btnIdx < BUTTON_COUNT) {
+            triggerButton((ButtonType)btnIdx); 
+        }
     }
     server.sendHeader("Location", "/");
     server.send(303);
@@ -194,14 +221,11 @@ void handleTrigger() {
 void setup() {
     Serial.begin(115200);
     
-    pinMode(PIN_PC_BTN1, OUTPUT);
-    pinMode(PIN_PC_BTN2, OUTPUT);
-    pinMode(PIN_PC_BTN3, OUTPUT);
-    pinMode(PIN_PC_BTN4, OUTPUT);
-    digitalWrite(PIN_PC_BTN1, LOW);
-    digitalWrite(PIN_PC_BTN2, LOW);
-    digitalWrite(PIN_PC_BTN3, LOW);
-    digitalWrite(PIN_PC_BTN4, LOW);
+    // 構造体配列から動的にピン初期化
+    for (int i = 0; i < BUTTON_COUNT; i++) {
+        pinMode(buttons[i].pin, OUTPUT);
+        digitalWrite(buttons[i].pin, LOW);
+    }
     
     dhtRoom.begin();
     dhtDuct.begin();
@@ -242,7 +266,7 @@ void setup() {
     MDNS.addService("http", "tcp", 80);
 }
 
-// ==================== メインループ ====================
+// ==================== メメインループ ====================
 void loop() {
     // ---- Wi-Fi自動再接続処理（ノンブロッキング） ----
     static unsigned long lastWiFiCheck = 0;
@@ -261,7 +285,8 @@ void loop() {
                 Serial.println("Wi-Fi再接続に成功しました。");
                 Serial.print("IPアドレス: ");
                 Serial.println(WiFi.localIP());
-                MDNS.announce();
+                
+                // MDNS.announce(); 
                 wasConnected = true;
             }
         }
@@ -269,7 +294,7 @@ void loop() {
     // -----------------------------------------------
 
     server.handleClient(); 
-    updateButtonPulses();  
+    updateButtonPulses();  // パルス生成器の更新駆動
     
     static unsigned long lastSensorRead = 0;
     if (millis() - lastSensorRead >= 2000) {
@@ -281,10 +306,11 @@ void loop() {
     }
     
     if (autoModeActive) {
+        // タイマー満了時の処理
         if (millis() - autoModeStartTime >= ((unsigned long)autoModeMinutes * 60 * 1000)) {
             autoModeActive = false; 
             if (currentHeaterState != HEATER_OFF) {
-                triggerButton(0); 
+                triggerButton(BTN_OFF); // 明示的なOFF
                 currentHeaterState = HEATER_OFF;
             }
             return;
@@ -293,7 +319,7 @@ void loop() {
         switch (currentHeaterState) {
             case HEATER_OFF:
                 if (currentRoomTemp <= targetOnTemp && currentRoomTemp > 0.0) {
-                    triggerButton(0); 
+                    triggerButton(BTN_ON); // 明示的なON
                     ignitionStartTime = millis();
                     ignitionStartDuctTemp = currentDuctTemp; 
                     currentHeaterState = HEATER_IGNITING;
@@ -307,8 +333,8 @@ void loop() {
                     Serial.println("点火成功を検知。通常運転モードへ移行。");
                 }
                 else if (millis() - ignitionStartTime >= IGNITION_TIMEOUT_MS) {
-                    Serial.println("5分経過しても温度上昇なし。不発とみなし再試行します。");
-                    triggerButton(0); 
+                    Serial.println("5分経過しても温度上昇なし。不発とみなし再点火試行。");
+                    triggerButton(BTN_ON); // 再点火試行
                     ignitionStartTime = millis(); 
                     ignitionStartDuctTemp = currentDuctTemp; 
                 }
@@ -316,9 +342,17 @@ void loop() {
                 
             case HEATER_ON:
                 if (currentRoomTemp >= targetOffTemp) {
-                    triggerButton(0); 
+                    triggerButton(BTN_OFF); // 明示的なOFF
                     currentHeaterState = HEATER_OFF;
                     Serial.println("目標温度達成。消火します。");
+                }
+                else {
+                    // -----------------------------------------------------------------
+                    // 【将来の拡張エリア】
+                    // ここに「目標温度に近づいたら、BTN_UP / BTN_DOWN を叩く」自動火力調整
+                    // ロジックを今後スムーズに追加可能です。
+                    // 例: if(currentRoomTemp > targetOffTemp - 1.0) { triggerButton(BTN_DOWN); }
+                    // -----------------------------------------------------------------
                 }
                 break;
         }
