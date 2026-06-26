@@ -286,7 +286,11 @@ void loop() {
                 Serial.print("IPアドレス: ");
                 Serial.println(WiFi.localIP());
                 
-                // MDNS.announce(); 
+                // MDNS.announce(); の代わり
+                MDNS.end();
+                if (MDNS.begin("ffheater")) {
+                    MDNS.addService("http", "tcp", 80);
+                }
                 wasConnected = true;
             }
         }
