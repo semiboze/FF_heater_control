@@ -173,12 +173,12 @@ void updateButtonPulses() {
 // }
 void handleRoot() {
     String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1.0'>";
-    html += "<style>body{font-family:sans-serif;background:#f0f2f5;color:#333;padding:10px;} .card{background:#fff;padding:15px;margin-bottom:15px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.1);} h2{margin-top:0;} .btn{display:inline-block;padding:10px 20px;background:#007bff;color:#fff;border:none;border-radius:4px;cursor:pointer;text-decoration:none;margin:5px;} .btn-danger{background:#dc3545;} input[type='number']{width:70px;padding:5px;font-size:16px;} select{padding:5px;font-size:16px;margin-left:5px;border-radius:4px;border:1px solid #ccc; background:#fff;}</style>";
+    html += "<style>body{font-family:sans-serif;background:#f0f2f5;color:#333;padding:10px;} .card{background:#fff;padding:15px;margin-bottom:15px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.1);} h2{margin-top:0;} .btn{display:inline-block;padding:10px 20px;background:#007bff;color:#fff;border:none;border-radius:4px;cursor:pointer;text-decoration:none;margin:5px;box-shadow:0 4px #0056b3;position:relative;transition:none;} .btn-danger{background:#dc3545;box-shadow:0 4px #a71d2a;} .active-style{background:#004085 !important;box-shadow:none !important;top:4px;} .btn-danger.active-style{background:#721c24 !important;} input[type='number']{width:70px;padding:5px;font-size:16px;} select{padding:5px;font-size:16px;margin-left:5px;border-radius:4px;border:1px solid #ccc; background:#fff;}</style>";
     html += "<title>FF Heater Remote</title></head><body>";
     
     html += "<div class='card'><h2>手動リモコン操作</h2>";
     for (int i = 0; i < BUTTON_COUNT; i++) {
-        html += "<a href='/trigger?btn=" + String(i) + "' class='btn'>" + buttons[i].label + "</a>";
+        html += "<a href='javascript:void(0);' onclick='clickButton(this,\"/trigger?btn=" + String(i) + "\")' class='btn'>" + buttons[i].label + "</a>";
     }
     html += "</div>";
     
@@ -207,7 +207,6 @@ void handleRoot() {
     for (int i = 0; i < 24; i++) { html += "<option value='" + String(i) + "'>" + String(i) + "時</option>"; }
     html += "</select> ";
     html += "<select id='idx_target_min' onchange='updateFromTime()'>";
-    // 00分〜59分を動的に生成
     for (int i = 0; i < 60; i++) {
         String pad = (i < 10) ? "0" : "";
         html += "<option value='" + String(i) + "'>" + pad + String(i) + "分</option>";
@@ -242,6 +241,11 @@ void handleRoot() {
     html += "</div>";
     
     html += "<script>";
+    html += "function clickButton(elem, url){";
+    html += "  elem.classList.add('active-style');";
+    html += "  setTimeout(function(){ window.location.href = url; }, 1000);";
+    html += "}";
+    
     html += "function updateFromMin(val){";
     html += "  var min=parseInt(val,10);";
     html += "  if(isNaN(min)||min<=0){return;}";
@@ -259,7 +263,7 @@ void handleRoot() {
     html += "  var diffMin=Math.ceil((target.getTime()-now.getTime())/(1000*60));";
     html += "  document.getElementById('idx_duration').value=diffMin;";
     html += "  updateFromMin(diffMin);";
-    html += "}";
+    html += "}"; // ← ここの外側にあった C++の「 } 」を消去しました
     
     html += "function checkMaxDuration(){";
     html += "  var min=parseInt(document.getElementById('idx_duration').value,10);";
