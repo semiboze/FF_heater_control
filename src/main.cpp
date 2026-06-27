@@ -195,13 +195,24 @@ void handleRoot() {
     String stateStr[] = {"停止中(OFF)", "点火確認中", "運転中(ON)"};
     html += "<p>ヒーター仮想状態: <strong>" + stateStr[currentHeaterState] + "</strong></p></div>";
     
-    html += "<div class='card'><h2>自動制御設定</h2><form action='/save' method='POST'>";
+    // 【修正】フォーム送信時にJavaScriptチェックを入れる
+    html += "<div class='card'><h2>自動制御設定</h2><form action='/save' method='POST' onsubmit='return checkMaxDuration();'>";
     
-    html += "<p>タイマー時間: <input type='number' id='idx_duration' name='duration' value='" + String(autoModeMinutes) + "' oninput='updateTimeText(this.value)'> 分 ";
-    html += "<select onchange=\"if(this.value){document.getElementById('idx_duration').value=this.value; updateTimeText(this.value);}; this.selectedIndex=0;\">";
+    // 【修正】タイマー時間入力（相対時間系）
+    html += "<p>タイマー時間: <input type='number' id='idx_duration' name='duration' value='" + String(autoModeMinutes) + "' oninput='updateFromMin(this.value)'> 分 ";
+    html += "<select onchange=\"if(this.value){document.getElementById('idx_duration').value=this.value; updateFromMin(this.value);}; this.selectedIndex=0;\">";
     html += "<option value='' disabled selected>選択...</option>";
     html += "<option value='60'>1時間</option><option value='120'>2時間</option><option value='180'>3時間</option><option value='240'>4時間</option><option value='300'>5時間</option><option value='360'>6時間</option><option value='420'>7時間</option><option value='480'>8時間</option><option value='540'>9時間</option><option value='600'>10時間</option><option value='660'>11時間</option><option value='720'>12時間</option>";
-    html += "</select><span id='time_readable' style='margin-left:10px; font-weight:bold; color:#007bff;'></span></p>";
+    html += "</select></p>";
+    
+    // 【新設】終了時刻指定（絶対時刻系：時・15分刻み分）
+    html += "<p>終了時刻指定: <select id='idx_target_hour' onchange='updateFromTime()'>";
+    for (int i = 0; i < 24; i++) { html += "<option value='" + String(i) + "'>" + String(i) + "時</option>"; }
+    html += "</select> ";
+    html += "<select id='idx_target_min' onchange='updateFromTime()'>";
+    html += "<option value='0'>00分</option><option value='15'>15分</option><option value='30'>30分</option><option value='45'>45分</option>";
+    html += "</select>";
+    html += "<span id='time_readable' style='margin-left:10px; font-weight:bold; color:#007bff;'></span></p>";
     
     html += "<p>ONトリガー温度: <input type='number' step='0.1' id='idx_ontemp' name='ontemp' value='" + String(targetOnTemp, 1) + "'> ℃ ";
     html += "<select onchange=\"if(this.value){document.getElementById('idx_ontemp').value=this.value;}; this.selectedIndex=0;\">";
@@ -224,20 +235,50 @@ void handleRoot() {
     html += "<input type='submit' class='btn' value='設定を保存して更新'></form>";
     
     if (!autoModeActive) {
-        html += "<a href='/toggleAuto?mode=on' class='btn'>自動制御を開始</a>";
+        // 【修正】ボタンクリック時にもJavaScriptチェックを入れる
+        html += "<a href='/toggleAuto?mode=on' class='btn' onclick='return checkMaxDuration();'>自動制御を開始</a>";
     } else {
         html += "<a href='/toggleAuto?mode=off' class='btn btn-danger'>自動制御を強制停止</a>";
     }
     html += "</div>";
     
+    // 双方向リアルタイム翻訳 & 超過警告ロジック
     html += "<script>";
-    html += "function updateTimeText(val){";
+    // 1.「分」の変更を検知して、翻訳テキストと「時・分」ドロップダウンを自動更新
+    html += "function updateFromMin(val){";
     html += "  var min=parseInt(val,10); var elem=document.getElementById('time_readable');";
     html += "  if(isNaN(min)||min<=0){elem.innerText=''; return;}";
     html += "  var h=Math.floor(min/60); var m=min%60;";
-    html += "  elem.innerText='（'+(h>0?h+'時間':'')+(m>0||h==0?m+'分':'')+'）';";
+    html += "  var now=new Date(); var target=new Date(now.getTime()+min*60*1000);";
+    html += "  var th=target.getHours(); var tm=target.getMinutes();";
+    html += "  elem.innerText='（'+(h>0?h+'時間':'')+(m>0||h==0?m+'分':'')+' ➔ '+th+':'+(tm<10?'0':'')+tm+'終了）';";
+    html += "  document.getElementById('idx_target_hour').value=th;";
+    html += "  document.getElementById('idx_target_min').value=Math.floor(tm/15)*15;"; // 15分刻みに丸めてドロップダウンを選択
     html += "}";
-    html += "updateTimeText(document.getElementById('idx_duration').value);";
+    
+    // 2.「時・分」ドロップダウンの変更を検知して、未来の該当時刻から「分」を逆算
+    html += "function updateFromTime(){";
+    html += "  var th=parseInt(document.getElementById('idx_target_hour').value,10);";
+    html += "  var tm=parseInt(document.getElementById('idx_target_min').value,10);";
+    html += "  var now=new Date(); var target=new Date(now.getFullYear(),now.getMonth(),now.getDate(),th,tm,0,0);";
+    html += "  if(target.getTime()<=now.getTime()){ target.setDate(target.getDate()+1); }"; // 過去なら翌日の同時刻とする
+    html += "  var diffMin=Math.ceil((target.getTime()-now.getTime())/(1000*60));";
+    html += "  document.getElementById('idx_duration').value=diffMin;";
+    html += "  updateFromMin(diffMin);";
+    html += "}";
+    
+    // 3.【新設】送信・開始ボタン押下時の12時間（720分）超過判定・警告処理
+    html += "function checkMaxDuration(){";
+    html += "  var min=parseInt(document.getElementById('idx_duration').value,10);";
+    html += "  if(!isNaN(min) && min>720){";
+    html += "    var h=Math.floor(min/60); var m=min%60;";
+    html += "    return confirm('警告：タイマー設定が12時間を超えています（'+h+'時間'+m+'分）。\\nこのまま実行しますか？');";
+    html += "  }";
+    html += "  return true;";
+    html += "}";
+    
+    // 初期起動時の画面表示合わせ
+    html += "updateFromMin(document.getElementById('idx_duration').value);";
     html += "</script>";
     
     html += "</body></html>";
