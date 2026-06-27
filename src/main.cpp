@@ -107,13 +107,76 @@ void updateButtonPulses() {
     }
 }
 
+// void handleRoot() {
+//     String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1.0'>";
+//     html += "<style>body{font-family:sans-serif;background:#f0f2f5;color:#333;padding:10px;} .card{background:#fff;padding:15px;margin-bottom:15px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.1);} h2{margin-top:0;} .btn{display:inline-block;padding:10px 20px;background:#007bff;color:#fff;border:none;border-radius:4px;cursor:pointer;text-decoration:none;margin:5px;} .btn-danger{background:#dc3545;} input[type='number']{width:70px;padding:5px;font-size:16px;} select{padding:5px;font-size:16px;margin-left:5px;border-radius:4px;border:1px solid #ccc; background:#fff;}</style>";
+//     html += "<title>FF Heater Remote</title></head><body>";
+    
+//     html += "<div class='card'><h2>手動リモコン操作</h2>";
+//     // 構造体配列から動的にボタンを生成（直しやすい構成）
+//     for (int i = 0; i < BUTTON_COUNT; i++) {
+//         html += "<a href='/trigger?btn=" + String(i) + "' class='btn'>" + buttons[i].label + "</a>";
+//     }
+//     html += "</div>";
+    
+//     html += "<div class='card'><h2>現在のステータス</h2>";
+//     html += "<p>接続中のSSID: <strong>" + WiFi.SSID() + "</strong></p>"; 
+//     html += "<p>室内温度: <strong>" + String(currentRoomTemp, 1) + " ℃</strong></p>";
+//     html += "<p>ダクト温度: <strong>" + String(currentDuctTemp, 1) + " ℃</strong></p>";
+//     html += "<p>自動制御モード: <strong>" + String(autoModeActive ? "有効（稼働中）" : "無効（停止中）") + "</strong></p>";
+//     if (autoModeActive) {
+//         long remaining = (autoModeMinutes * 60) - ((millis() - autoModeStartTime) / 1000);
+//         if (remaining < 0) remaining = 0;
+//         html += "<p>残り時間: <strong>" + String(remaining / 60) + "分 " + String(remaining % 60) + "秒</strong></p>";
+//     }
+//     String stateStr[] = {"停止中(OFF)", "点火確認中", "運転中(ON)"};
+//     html += "<p>ヒーター仮想状態: <strong>" + stateStr[currentHeaterState] + "</strong></p></div>";
+    
+//     html += "<div class='card'><h2>自動制御設定</h2><form action='/save' method='POST'>";
+    
+//     html += "<p>タイマー時間: <input type='number' id='idx_duration' name='duration' value='" + String(autoModeMinutes) + "'> 分 ";
+//     html += "<select onchange=\"if(this.value){document.getElementById('idx_duration').value=this.value;}; this.selectedIndex=0;\">";
+//     html += "<option value='' disabled selected>選択...</option>";
+//     html += "<option value='60'>1時間</option><option value='120'>2時間</option><option value='180'>3時間</option><option value='240'>4時間</option><option value='300'>5時間</option><option value='360'>6時間</option><option value='420'>7時間</option><option value='480'>8時間</option><option value='540'>9時間</option><option value='600'>10時間</option><option value='660'>11時間</option><option value='720'>12時間</option>";
+//     html += "</select></p>";
+    
+//     html += "<p>ONトリガー温度: <input type='number' step='0.1' id='idx_ontemp' name='ontemp' value='" + String(targetOnTemp, 1) + "'> ℃ ";
+//     html += "<select onchange=\"if(this.value){document.getElementById('idx_ontemp').value=this.value;}; this.selectedIndex=0;\">";
+//     html += "<option value='' disabled selected>選択...</option>";
+//     for (int t = 5; t <= 30; t++) { html += "<option value='" + String(t) + "'>" + String(t) + "℃</option>"; }
+//     html += "</select> (天井)</p>";
+    
+//     html += "<p>OFFトリガー温度: <input type='number' step='0.1' id='idx_offtemp' name='offtemp' value='" + String(targetOffTemp, 1) + "'> ℃ ";
+//     html += "<select onchange=\"if(this.value){document.getElementById('idx_offtemp').value=this.value;}; this.selectedIndex=0;\">";
+//     html += "<option value='' disabled selected>選択...</option>";
+//     for (int t = 5; t <= 30; t++) { html += "<option value='" + String(t) + "'>" + String(t) + "℃</option>"; }
+//     html += "</select> (天井)</p>";
+    
+//     html += "<p>点火判定温度上昇値: <input type='number' step='0.1' id='idx_ductthresh' name='ductthresh' value='" + String(ductThreshTemp, 1) + "'> ℃ ";
+//     html += "<select onchange=\"if(this.value){document.getElementById('idx_ductthresh').value=this.value;}; this.selectedIndex=0;\">";
+//     html += "<option value='' disabled selected>選択...</option>";
+//     for (int t = 2; t <= 15; t++) { html += "<option value='" + String(t) + "'>" + String(t) + "℃</option>"; }
+//     html += "</select> (ダクト)</p>";
+    
+//     html += "<input type='submit' class='btn' value='設定を保存して更新'></form>";
+    
+//     if (!autoModeActive) {
+//         html += "<a href='/toggleAuto?mode=on' class='btn'>自動制御を開始</a>";
+//     } else {
+//         html += "<a href='/toggleAuto?mode=off' class='btn btn-danger'>自動制御を強制停止</a>";
+//     }
+//     html += "</div>";
+    
+//     html += "<script>setInterval(function(){ location.reload(); }, 5000);</script>"; 
+//     html += "</body></html>";
+//     server.send(200, "text/html", html);
+// }
 void handleRoot() {
     String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1.0'>";
     html += "<style>body{font-family:sans-serif;background:#f0f2f5;color:#333;padding:10px;} .card{background:#fff;padding:15px;margin-bottom:15px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.1);} h2{margin-top:0;} .btn{display:inline-block;padding:10px 20px;background:#007bff;color:#fff;border:none;border-radius:4px;cursor:pointer;text-decoration:none;margin:5px;} .btn-danger{background:#dc3545;} input[type='number']{width:70px;padding:5px;font-size:16px;} select{padding:5px;font-size:16px;margin-left:5px;border-radius:4px;border:1px solid #ccc; background:#fff;}</style>";
     html += "<title>FF Heater Remote</title></head><body>";
     
     html += "<div class='card'><h2>手動リモコン操作</h2>";
-    // 構造体配列から動的にボタンを生成（直しやすい構成）
     for (int i = 0; i < BUTTON_COUNT; i++) {
         html += "<a href='/trigger?btn=" + String(i) + "' class='btn'>" + buttons[i].label + "</a>";
     }
@@ -167,11 +230,9 @@ void handleRoot() {
     }
     html += "</div>";
     
-    html += "<script>setInterval(function(){ location.reload(); }, 5000);</script>"; 
     html += "</body></html>";
     server.send(200, "text/html", html);
 }
-
 void handleSave() {
     if (server.hasArg("duration")) autoModeMinutes = server.arg("duration").toInt();
     if (server.hasArg("ontemp")) targetOnTemp = server.arg("ontemp").toFloat();
