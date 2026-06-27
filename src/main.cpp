@@ -197,11 +197,11 @@ void handleRoot() {
     
     html += "<div class='card'><h2>自動制御設定</h2><form action='/save' method='POST'>";
     
-    html += "<p>タイマー時間: <input type='number' id='idx_duration' name='duration' value='" + String(autoModeMinutes) + "'> 分 ";
-    html += "<select onchange=\"if(this.value){document.getElementById('idx_duration').value=this.value;}; this.selectedIndex=0;\">";
+    html += "<p>タイマー時間: <input type='number' id='idx_duration' name='duration' value='" + String(autoModeMinutes) + "' oninput='updateTimeText(this.value)'> 分 ";
+    html += "<select onchange=\"if(this.value){document.getElementById('idx_duration').value=this.value; updateTimeText(this.value);}; this.selectedIndex=0;\">";
     html += "<option value='' disabled selected>選択...</option>";
     html += "<option value='60'>1時間</option><option value='120'>2時間</option><option value='180'>3時間</option><option value='240'>4時間</option><option value='300'>5時間</option><option value='360'>6時間</option><option value='420'>7時間</option><option value='480'>8時間</option><option value='540'>9時間</option><option value='600'>10時間</option><option value='660'>11時間</option><option value='720'>12時間</option>";
-    html += "</select></p>";
+    html += "</select><span id='time_readable' style='margin-left:10px; font-weight:bold; color:#007bff;'></span></p>";
     
     html += "<p>ONトリガー温度: <input type='number' step='0.1' id='idx_ontemp' name='ontemp' value='" + String(targetOnTemp, 1) + "'> ℃ ";
     html += "<select onchange=\"if(this.value){document.getElementById('idx_ontemp').value=this.value;}; this.selectedIndex=0;\">";
@@ -229,6 +229,16 @@ void handleRoot() {
         html += "<a href='/toggleAuto?mode=off' class='btn btn-danger'>自動制御を強制停止</a>";
     }
     html += "</div>";
+    
+    html += "<script>";
+    html += "function updateTimeText(val){";
+    html += "  var min=parseInt(val,10); var elem=document.getElementById('time_readable');";
+    html += "  if(isNaN(min)||min<=0){elem.innerText=''; return;}";
+    html += "  var h=Math.floor(min/60); var m=min%60;";
+    html += "  elem.innerText='（'+(h>0?h+'時間':'')+(m>0||h==0?m+'分':'')+'）';";
+    html += "}";
+    html += "updateTimeText(document.getElementById('idx_duration').value);";
+    html += "</script>";
     
     html += "</body></html>";
     server.send(200, "text/html", html);
