@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FFヒーター制御 (BLE)</title>
+    <style>
+        body { font-family: sans-serif; padding: 10px; max-width: 400px; margin: auto; }
+        .card { border: 1px solid #ccc; padding: 15px; margin-bottom: 15px; border-radius: 5px; }
+        button { padding: 12px 15px; margin: 5px 0; width: 100%; box-sizing: border-box; font-size: 16px; cursor: pointer; }
+        .flex { display: flex; gap: 10px; }
+        .flex button { flex: 1; }
+        label { display: block; margin-top: 10px; font-size: 0.9em; font-weight: bold; }
+        input, select { width: 100%; padding: 10px; margin-top: 5px; box-sizing: border-box; font-size: 16px; }
+    </style>
+</head>
+<body>
+
+<button id="connectBtn" style="background:#007BFF; color:white;">ESP32に接続 (BLE)</button>
+<p style="text-align:center; font-weight:bold;">ステータス: <span id="statusTxt">未接続</span></p>
+
+<div class="card">
+    <h3>現在状態</h3>
+    <p>室温: <span id="rTemp">--</span> ℃ / ダクト: <span id="dTemp">--</span> ℃</p>
+    <p>ヒーター: <span id="heaterState">停止中</span></p>
+    <p>自動モード: <span id="autoState">OFF</span> (残り: <span id="remainTime">--</span> 秒)</p>
+</div>
+
+<div class="card">
+    <h3>手動操作</h3>
+    <div class="flex">
+        <button onclick="sendCommand('B,0')">電源ON</button>
+        <button onclick="sendCommand('B,1')">電源OFF</button>
+    </div>
+    <div class="flex">
+        <button onclick="sendCommand('B,2')">温度＋</button>
+        <button onclick="sendCommand('B,3')">温度－</button>
+    </div>
+</div>
+
+<div class="card">
+    <h3>自動モード設定</h3>
+    <label>タイマー設定:</label>
+    <select id="setDur">
+        <option value="30">30分</option>
+        <option value="60">60分</option>
+        <option value="90">90分</option>
+        <option value="120">120分</option>
+    </select>
+    
+    <label>ON開始 室温 (℃):</label>
+    <input type="number" id="setOn" step="0.5">
+    
+    <label>OFF停止 室温 (℃):</label>
+    <input type="number" id="setOff" step="0.5">
+    
+    <label>点火判定 ダクト上昇幅 (℃):</label>
+    <input type="number" id="setDuct" step="0.5">
+    
+    <button onclick="saveSettings()" style="margin-top:15px; border:1px solid #333;">設定をESP32へ保存</button>
+    
+    <div class="flex" style="margin-top:15px;">
+        <button onclick="sendCommand('A,1')" style="background:#28a745; color:white;">自動モード 開始</button>
+        <button onclick="sendCommand('A,0')" style="background:#dc3545; color:white;">自動モード 停止</button>
+    </div>
+</div>
+
+<script>
+const SERVICE_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
+const CHAR_STATUS_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
+const CHAR_CMD_UUID = '8c772be5-e0d0-4251-bb5c-1f6874eb7310';
+
+let bleDevice, cmdCharacteristic;
+
+document.getElementById('connectBtn').addEventListener('click', async () => {
+    if (!navigator.bluetooth) {
+        alert("このブラウザはWeb Bluetooth APIをサポートしていません。");
+        return;
+    }
+    try {
+        bleDevice = await navigator.bluetooth.requestDevice({
+            filters: [{ name: 'FF_Heater' }],
+            optionalServices: [SERVICE_UUID]
+        });
+        
+        bleDevice.addEventListener('gattserverdisconnected', () => {
+            document.getElementById('statusTxt').innerText = "切断されました";
+            cmdCharacteristic = null;
+        });
+
+        document.getElementById('statusTxt').innerText = "接続中...";
+        const server = await bleDevice.gatt.connect();
+        const service = await server.getPrimaryService(SERVICE_UUID);
+        
+        cmdCharacteristic = await service.getCharacteristic(CHAR_CMD_UUID);
+        const statusCharacteristic = await service.getCharacteristic(CHAR_STATUS_UUID);
+        
+        await statusCharacteristic.startNotifications();
+        statusCharacteristic.addEventListener('characteristicvaluechanged', handleStatusUpdate);
+        
+        document.getElementById('statusTxt').innerText = "接続完了 (通信中)";
+    } catch (error) {
+        console.error(error);
+        document.getElementById('statusTxt').innerText = "エラー: " + error.message;
+    }
+});
+
+function handleStatusUpdate(event) {
+    const value = new TextDecoder().decode(event.target.value);
+    const parts = value.split(',');
+    
+    if (parts[0] === 'R' && parts.length >= 10) {
+        document.getElementById('rTemp').innerText = parts[1];
+        document.getElementById('dTemp').innerText = parts[2];
+        document.getElementById('autoState').innerText = parts[3] === '1' ? "ON" : "OFF";
+        
+        const states = ["停止中", "点火プロセス中", "通常運転中"];
+        document.getElementById('heaterState').innerText = states[parseInt(parts[4])] || "不明";
+        document.getElementById('remainTime').innerText = parts[5];
+        
+        // ユーザーが入力中でない場合のみ、ESP32側の現在設定値でUIを上書き
+        if(document.activeElement.tagName !== "INPUT" && document.activeElement.tagName !== "SELECT"){
+             document.getElementById('setDur').value = parts[6];
+             document.getElementById('setOn').value = parts[7];
+             document.getElementById('setOff').value = parts[8];
+             document.getElementById('setDuct').value = parts[9];
+        }
+    }
+}
+
+async function sendCommand(cmd) {
+    if (!cmdCharacteristic) return alert("ESP32と接続されていません。上部のボタンから接続してください。");
+    const data = new TextEncoder().encode(cmd);
+    await cmdCharacteristic.writeValue(data);
+}
+
+function saveSettings() {
+    // 空値の場合はデフォルト値を適用しリセットバグを回避
+    const dur = document.getElementById('setDur').value || 60;
+    const onT = document.getElementById('setOn').value || 10.0;
+    const offT = document.getElementById('setOff').value || 15.0;
+    const ductT = document.getElementById('setDuct').value || 5.0;
+    
+    sendCommand(`S,${dur},${onT},${offT},${ductT}`);
+    alert("設定送信コマンドを発行しました。");
+}
+</script>
+</body>
+</html>
