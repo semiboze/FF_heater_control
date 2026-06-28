@@ -60,6 +60,29 @@ const unsigned long IGNITION_TIMEOUT_MS = 300000;
 float currentRoomTemp = 0.0;
 float currentDuctTemp = 0.0;
 
+// ==================== LED点滅パターン定義 ====================
+// 点滅間隔(ms)
+#define BLINK_INTERVAL_MS 200
+
+// 各ボタン・操作ごとの回数定義
+#define PATTERN_ON_COUNT      1  // 0.2秒間点灯(1回点滅/長め)
+#define PATTERN_OFF_COUNT     5  // 1秒間点灯(0.2s * 5回=1秒) ※回数で表現
+#define PATTERN_UP_COUNT      2  // 2回点滅
+#define PATTERN_DOWN_COUNT    3  // 3回点滅
+#define PATTERN_SETTING_COUNT 4  // 4回点滅
+
+// ==================== LED制御用変数 ====================
+const int PIN_LED = 2;
+int remainingBlinks = 0;
+unsigned long nextBlinkTime = 0;
+bool ledState = false;
+
+// ボタンの種類とパターンを紐付け
+void triggerLedPattern(int count) {
+    remainingBlinks = count * 2; // ON/OFFの切り替え回数
+    ledState = false;
+    nextBlinkTime = millis();
+}
 // ==================== 関数定義 ====================
 void triggerButton(ButtonType btn) {
     if (buttons[btn].pressCount > 0) return;
@@ -104,6 +127,56 @@ class MyServerCallbacks: public BLEServerCallbacks {
 class MyCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pChar) {
         String value = pChar->getValue().c_str();
+        if (value.startsWith("B,0")) { // 電源ON
+            triggerButton(BTN_ON);
+            triggerLedPattern(PATTERN_ON_COUNT);
+        }
+        else if (value.startsWith("B,1")) { // 電源OFF
+            triggerButton(BTN_OFF);
+            triggerLedPattern(PATTERN_OFF_COUNT);
+        }
+        else if (value.startsWith("B,2")) { // 温度UP
+            triggerButton(BTN_UP);
+            triggerLedPattern(PATTERN_UP_COUNT);
+        }
+        else if (value.startsWith("B,3")) { // 温度DOWN
+            triggerButton(BTN_DOWN);
+            triggerLedPattern(PATTERN_DOWN_COUNT);
+        }
+        // 自動モード切替（LEDパターンは必要に応じて定義してください）
+        else if (value.startsWith("A,")) {
+            int mode = value.substring(2).toInt();
+            // 停止/開始時も何か光らせるならここで triggerLedPattern() を呼ぶ
+            if (mode == 1) {
+                autoModeActive = true;
+                autoModeStartTime = millis();
+                currentHeaterState = HEATER_OFF; 
+            } else {
+                autoModeActive = false;
+                if (currentHeaterState != HEATER_OFF) {
+                    triggerButton(BTN_OFF); 
+                    currentHeaterState = HEATER_OFF;
+                }
+            }
+        }
+        // 設定保存（S,）
+        else if (value.startsWith("S,")) {
+            int dur; float onT, offT, ductT;
+            if (sscanf(value.c_str(), "S,%d,%f,%f,%f", &dur, &onT, &offT, &ductT) == 4) {
+                autoModeMinutes = dur;
+                targetOnTemp = onT;
+                targetOffTemp = offT;
+                ductThreshTemp = ductT;
+                    
+                prefs.putInt("duration", autoModeMinutes);
+                prefs.putFloat("ontemp", targetOnTemp);
+                prefs.putFloat("offtemp", targetOffTemp);
+                prefs.putFloat("ductthresh", ductThreshTemp);
+                
+                // 設定保存成功時に4回点滅パターンを呼び出し
+                triggerLedPattern(PATTERN_SETTING_COUNT);
+            }
+        }
         if (value.length() > 0) {
             Serial.print("BLE受信: "); Serial.println(value);
 
@@ -195,6 +268,13 @@ void setup() {
 
 // ==================== メインループ ====================
 void loop() {
+    // LED点滅ロジック (非同期)
+    if (remainingBlinks > 0 && millis() >= nextBlinkTime) {
+        ledState = !ledState;
+        digitalWrite(PIN_LED, ledState ? HIGH : LOW);
+        remainingBlinks--;
+        nextBlinkTime = millis() + BLINK_INTERVAL_MS;
+    }
     updateButtonPulses(); 
     
     static unsigned long lastSensorRead = 0;
