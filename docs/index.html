@@ -5,144 +5,229 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FFヒーター制御 (BLE)</title>
     <style>
-        body { font-family: sans-serif; padding: 10px; max-width: 400px; margin: auto; }
-        .card { border: 1px solid #ccc; padding: 15px; margin-bottom: 15px; border-radius: 5px; }
-        button { padding: 12px 15px; margin: 5px 0; width: 100%; box-sizing: border-box; font-size: 16px; cursor: pointer; }
+        body { font-family: sans-serif; background: #f0f2f5; color: #333; padding: 10px; max-width: 500px; margin: auto; }
+        .card { background: #fff; padding: 15px; margin-bottom: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        h2, h3 { margin-top: 0; }
+        .btn { display: inline-block; padding: 12px 15px; background: #007bff; color: #fff; border: none; border-radius: 4px; cursor: pointer; text-decoration: none; text-align: center; margin: 5px 0; box-sizing: border-box; font-size: 16px; width: 100%; box-shadow: 0 4px #0056b3; }
+        .btn:active { box-shadow: none; transform: translateY(4px); }
+        .btn-danger { background: #dc3545; box-shadow: 0 4px #a71d2a; }
+        .btn-success { background: #28a745; box-shadow: 0 4px #1e7e34; }
         .flex { display: flex; gap: 10px; }
-        .flex button { flex: 1; }
+        .flex .btn { flex: 1; margin: 0; }
         label { display: block; margin-top: 10px; font-size: 0.9em; font-weight: bold; }
-        input, select { width: 100%; padding: 10px; margin-top: 5px; box-sizing: border-box; font-size: 16px; }
+        .input-group { display: flex; align-items: center; margin-top: 5px; gap: 5px; }
+        input[type='number'] { width: 80px; padding: 8px; font-size: 16px; border: 1px solid #ccc; border-radius: 4px; }
+        select { padding: 8px; font-size: 16px; border-radius: 4px; border: 1px solid #ccc; background: #fff; flex: 1; }
     </style>
 </head>
 <body>
 
-<button id="connectBtn" style="background:#007BFF; color:white;">ESP32に接続 (BLE)</button>
+<button id="connectBtn" class="btn" style="background:#17a2b8; box-shadow:0 4px #117a8b;">ESP32に接続 (BLE)</button>
 <p style="text-align:center; font-weight:bold;">ステータス: <span id="statusTxt">未接続</span></p>
 
 <div class="card">
-    <h3>現在状態</h3>
-    <p>室温: <span id="rTemp">--</span> ℃ / ダクト: <span id="dTemp">--</span> ℃</p>
-    <p>ヒーター: <span id="heaterState">停止中</span></p>
-    <p>自動モード: <span id="autoState">OFF</span> (残り: <span id="remainTime">--</span> 秒)</p>
+    <h3>現在のステータス</h3>
+    <p>室内温度: <strong><span id="rTemp">--</span> ℃</strong></p>
+    <p>ダクト温度: <strong><span id="dTemp">--</span> ℃</strong></p>
+    <p>自動制御モード: <strong><span id="autoState">無効（停止中）</span></strong></p>
+    <p>残り時間: <strong><span id="remainTime">--</span></strong></p>
+    <p>ヒーター仮想状態: <strong><span id="heaterState">停止中(OFF)</span></strong></p>
 </div>
 
 <div class="card">
-    <h3>手動操作</h3>
-    <div class="flex">
-        <button onclick="sendCommand('B,0')">電源ON</button>
-        <button onclick="sendCommand('B,1')">電源OFF</button>
+    <h3>手動リモコン操作</h3>
+    <div class="flex" style="margin-bottom: 10px;">
+        <button class="btn" onclick="sendCommand('B,0')">電源ON</button>
+        <button class="btn btn-danger" onclick="sendCommand('B,1')">電源OFF</button>
     </div>
     <div class="flex">
-        <button onclick="sendCommand('B,2')">温度＋</button>
-        <button onclick="sendCommand('B,3')">温度－</button>
+        <button class="btn" onclick="sendCommand('B,2')">温度上げ</button>
+        <button class="btn" onclick="sendCommand('B,3')">温度下げ</button>
     </div>
 </div>
 
 <div class="card">
-    <h3>自動モード設定</h3>
-    <label>タイマー設定:</label>
-    <select id="setDur">
-        <option value="30">30分</option>
-        <option value="60">60分</option>
-        <option value="90">90分</option>
-        <option value="120">120分</option>
-    </select>
+    <h3>自動制御設定</h3>
     
-    <label>ON開始 室温 (℃):</label>
-    <input type="number" id="setOn" step="0.5">
+    <label>タイマー時間 (分):</label>
+    <div class="input-group">
+        <input type="number" id="setDur" value="60" oninput="updateFromMin(this.value)"> 分
+        <select id="selDur" onchange="if(this.value){document.getElementById('setDur').value=this.value; updateFromMin(this.value);}; this.selectedIndex=0;">
+            <option value="" disabled selected>選択...</option>
+            </select>
+    </div>
     
-    <label>OFF停止 室温 (℃):</label>
-    <input type="number" id="setOff" step="0.5">
+    <label>終了時刻指定:</label>
+    <div class="input-group">
+        <select id="target_hour" onchange="updateFromTime()"></select> 時
+        <select id="target_min" onchange="updateFromTime()"></select> 分
+    </div>
     
-    <label>点火判定 ダクト上昇幅 (℃):</label>
-    <input type="number" id="setDuct" step="0.5">
+    <label>ONトリガー温度 (℃) [天井]:</label>
+    <div class="input-group">
+        <input type="number" step="0.1" id="setOn" value="10.0">
+        <select id="selOn" onchange="if(this.value){document.getElementById('setOn').value=this.value;}; this.selectedIndex=0;">
+            <option value="" disabled selected>選択...</option>
+            </select>
+    </div>
     
-    <button onclick="saveSettings()" style="margin-top:15px; border:1px solid #333;">設定をESP32へ保存</button>
+    <label>OFFトリガー温度 (℃) [天井]:</label>
+    <div class="input-group">
+        <input type="number" step="0.1" id="setOff" value="15.0">
+        <select id="selOff" onchange="if(this.value){document.getElementById('setOff').value=this.value;}; this.selectedIndex=0;">
+            <option value="" disabled selected>選択...</option>
+            </select>
+    </div>
+    
+    <label>点火判定温度上昇値 (℃) [ダクト]:</label>
+    <div class="input-group">
+        <input type="number" step="0.1" id="setDuct" value="5.0">
+        <select id="selDuct" onchange="if(this.value){document.getElementById('setDuct').value=this.value;}; this.selectedIndex=0;">
+            <option value="" disabled selected>選択...</option>
+            </select>
+    </div>
+    
+    <button class="btn" onclick="saveSettings()" style="margin-top:20px; background:#6c757d; box-shadow:0 4px #5a6268;">設定をESP32へ保存</button>
     
     <div class="flex" style="margin-top:15px;">
-        <button onclick="sendCommand('A,1')" style="background:#28a745; color:white;">自動モード 開始</button>
-        <button onclick="sendCommand('A,0')" style="background:#dc3545; color:white;">自動モード 停止</button>
+        <button class="btn btn-success" onclick="startAutoMode()">自動制御を開始</button>
+        <button class="btn btn-danger" onclick="sendCommand('A,0')">強制停止</button>
     </div>
 </div>
 
 <script>
+// ==========================================
+// 1. UIオプションの動的生成（handleRoot互換）
+// ==========================================
+window.onload = function() {
+    // タイマー（1時間～12時間）
+    const selDur = document.getElementById('selDur');
+    for (let i = 1; i <= 12; i++) selDur.add(new Option(i + '時間', i * 60));
+    
+    // 時刻（0～23時、0～59分）
+    const tHour = document.getElementById('target_hour');
+    for (let i = 0; i < 24; i++) tHour.add(new Option(i + '時', i));
+    const tMin = document.getElementById('target_min');
+    for (let i = 0; i < 60; i++) tMin.add(new Option((i < 10 ? '0' : '') + i + '分', i));
+    
+    // 温度（5～30℃）
+    const selOn = document.getElementById('selOn');
+    const selOff = document.getElementById('selOff');
+    for (let t = 5; t <= 30; t++) {
+        selOn.add(new Option(t + '℃', t));
+        selOff.add(new Option(t + '℃', t));
+    }
+    
+    // ダクト温度（2～15℃）
+    const selDuct = document.getElementById('selDuct');
+    for (let t = 2; t <= 15; t++) selDuct.add(new Option(t + '℃', t));
+
+    updateFromMin(document.getElementById('setDur').value);
+};
+
+// ==========================================
+// 2. 時刻・タイマー連動計算ロジック
+// ==========================================
+function updateFromMin(val) {
+    let min = parseInt(val, 10);
+    if (isNaN(min) || min <= 0) return;
+    let now = new Date();
+    let target = new Date(now.getTime() + min * 60 * 1000);
+    document.getElementById('target_hour').value = target.getHours();
+    document.getElementById('target_min').value = target.getMinutes();
+}
+
+function updateFromTime() {
+    let th = parseInt(document.getElementById('target_hour').value, 10);
+    let tm = parseInt(document.getElementById('target_min').value, 10);
+    let now = new Date();
+    let target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), th, tm, 0, 0);
+    if (target.getTime() <= now.getTime()) { target.setDate(target.getDate() + 1); }
+    let diffMin = Math.ceil((target.getTime() - now.getTime()) / (1000 * 60));
+    document.getElementById('setDur').value = diffMin;
+    updateFromMin(diffMin);
+}
+
+function startAutoMode() {
+    let min = parseInt(document.getElementById('setDur').value, 10);
+    if (!isNaN(min) && min > 720) {
+        let h = Math.floor(min / 60);
+        let m = min % 60;
+        if (!confirm(`警告：タイマー設定が12時間を超えています（${h}時間${m}分）。\nこのまま実行しますか？`)) {
+            return;
+        }
+    }
+    saveSettings(); // 開始前に現在画面の値を保存
+    setTimeout(() => { sendCommand('A,1'); }, 300); // 保存通信の直後に開始コマンドを発行
+}
+
+// ==========================================
+// 3. BLE 通信ロジック
+// ==========================================
 const SERVICE_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
 const CHAR_STATUS_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
 const CHAR_CMD_UUID = '8c772be5-e0d0-4251-bb5c-1f6874eb7310';
-
 let bleDevice, cmdCharacteristic;
 
 document.getElementById('connectBtn').addEventListener('click', async () => {
-    if (!navigator.bluetooth) {
-        alert("このブラウザはWeb Bluetooth APIをサポートしていません。");
-        return;
-    }
+    if (!navigator.bluetooth) { alert("Web Bluetooth API非対応ブラウザです。"); return; }
     try {
         bleDevice = await navigator.bluetooth.requestDevice({
             filters: [{ name: 'FF_Heater' }],
             optionalServices: [SERVICE_UUID]
         });
-        
         bleDevice.addEventListener('gattserverdisconnected', () => {
             document.getElementById('statusTxt').innerText = "切断されました";
             cmdCharacteristic = null;
         });
-
         document.getElementById('statusTxt').innerText = "接続中...";
         const server = await bleDevice.gatt.connect();
         const service = await server.getPrimaryService(SERVICE_UUID);
-        
         cmdCharacteristic = await service.getCharacteristic(CHAR_CMD_UUID);
-        const statusCharacteristic = await service.getCharacteristic(CHAR_STATUS_UUID);
-        
-        await statusCharacteristic.startNotifications();
-        statusCharacteristic.addEventListener('characteristicvaluechanged', handleStatusUpdate);
-        
+        const statusChar = await service.getCharacteristic(CHAR_STATUS_UUID);
+        await statusChar.startNotifications();
+        statusChar.addEventListener('characteristicvaluechanged', handleStatusUpdate);
         document.getElementById('statusTxt').innerText = "接続完了 (通信中)";
-    } catch (error) {
-        console.error(error);
-        document.getElementById('statusTxt').innerText = "エラー: " + error.message;
+    } catch (e) {
+        document.getElementById('statusTxt').innerText = "エラー: " + e.message;
     }
 });
 
 function handleStatusUpdate(event) {
-    const value = new TextDecoder().decode(event.target.value);
-    const parts = value.split(',');
-    
+    const parts = new TextDecoder().decode(event.target.value).split(',');
     if (parts[0] === 'R' && parts.length >= 10) {
-        document.getElementById('rTemp').innerText = parts[1];
-        document.getElementById('dTemp').innerText = parts[2];
-        document.getElementById('autoState').innerText = parts[3] === '1' ? "ON" : "OFF";
+        document.getElementById('rTemp').innerText = parseFloat(parts[1]).toFixed(1);
+        document.getElementById('dTemp').innerText = parseFloat(parts[2]).toFixed(1);
+        document.getElementById('autoState').innerText = parts[3] === '1' ? "有効（稼働中）" : "無効（停止中）";
         
-        const states = ["停止中", "点火プロセス中", "通常運転中"];
+        const remSec = parseInt(parts[5]);
+        document.getElementById('remainTime').innerText = parts[3] === '1' ? `${Math.floor(remSec/60)}分 ${remSec%60}秒` : "--";
+        
+        const states = ["停止中(OFF)", "点火確認中", "運転中(ON)"];
         document.getElementById('heaterState').innerText = states[parseInt(parts[4])] || "不明";
-        document.getElementById('remainTime').innerText = parts[5];
         
-        // ユーザーが入力中でない場合のみ、ESP32側の現在設定値でUIを上書き
+        // 入力中でない場合のみUI更新
         if(document.activeElement.tagName !== "INPUT" && document.activeElement.tagName !== "SELECT"){
              document.getElementById('setDur').value = parts[6];
-             document.getElementById('setOn').value = parts[7];
-             document.getElementById('setOff').value = parts[8];
-             document.getElementById('setDuct').value = parts[9];
+             updateFromMin(parts[6]);
+             document.getElementById('setOn').value = parseFloat(parts[7]).toFixed(1);
+             document.getElementById('setOff').value = parseFloat(parts[8]).toFixed(1);
+             document.getElementById('setDuct').value = parseFloat(parts[9]).toFixed(1);
         }
     }
 }
 
 async function sendCommand(cmd) {
-    if (!cmdCharacteristic) return alert("ESP32と接続されていません。上部のボタンから接続してください。");
-    const data = new TextEncoder().encode(cmd);
-    await cmdCharacteristic.writeValue(data);
+    if (!cmdCharacteristic) return alert("ESP32と接続されていません。");
+    await cmdCharacteristic.writeValue(new TextEncoder().encode(cmd));
 }
 
 function saveSettings() {
-    // 空値の場合はデフォルト値を適用しリセットバグを回避
     const dur = document.getElementById('setDur').value || 60;
     const onT = document.getElementById('setOn').value || 10.0;
     const offT = document.getElementById('setOff').value || 15.0;
     const ductT = document.getElementById('setDuct').value || 5.0;
-    
     sendCommand(`S,${dur},${onT},${offT},${ductT}`);
-    alert("設定送信コマンドを発行しました。");
 }
 </script>
 </body>
