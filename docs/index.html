@@ -37,12 +37,12 @@
 <div class="card">
     <h3>手動リモコン操作</h3>
     <div class="flex" style="margin-bottom: 10px;">
-        <button class="btn" onclick="sendCommand('B,0')">電源ON</button>
-        <button class="btn btn-danger" onclick="sendCommand('B,1')">電源OFF</button>
+        <button class="btn" onclick="sendCommand('B,0', this)">電源ON</button>
+        <button class="btn btn-danger" onclick="sendCommand('B,1', this)">電源OFF</button>
     </div>
     <div class="flex">
-        <button class="btn" onclick="sendCommand('B,2')">温度上げ</button>
-        <button class="btn" onclick="sendCommand('B,3')">温度下げ</button>
+        <button class="btn" onclick="sendCommand('B,2', this)">温度上げ</button>
+        <button class="btn" onclick="sendCommand('B,3', this)">温度DOWN</button>
     </div>
 </div>
 
