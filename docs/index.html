@@ -195,6 +195,12 @@ document.getElementById('connectBtn').addEventListener('click', async () => {
 
 function handleStatusUpdate(event) {
     const parts = new TextDecoder().decode(event.target.value).split(',');
+
+    // 追記：ACK受信時のメッセージ表示
+    if (parts[0] === 'ACK') {
+        showFeedback("コマンド受信完了");
+        return;
+    }
     if (parts[0] === 'R' && parts.length >= 10) {
         document.getElementById('rTemp').innerText = parseFloat(parts[1]).toFixed(1);
         document.getElementById('dTemp').innerText = parseFloat(parts[2]).toFixed(1);

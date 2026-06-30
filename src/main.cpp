@@ -127,39 +127,42 @@ class MyServerCallbacks: public BLEServerCallbacks {
 class MyCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pChar) {
         String value = pChar->getValue().c_str();
-        if (value.startsWith("B,0")) { // 電源ON
-            triggerButton(BTN_ON);
-            triggerLedPattern(PATTERN_ON_COUNT);
+        if (value.length() == 0) return;
+
+        Serial.print("BLE受信: "); Serial.println(value);
+
+        // 1. 受信確認(ACK)をスマホへ即座に送信
+        pStatusChar->setValue(("ACK," + value.substring(2)).c_str());
+        pStatusChar->notify();
+
+        // 2. パターン分岐とLED点滅、機能実行
+        if (value.startsWith("B,")) {
+            int btnIdx = value.substring(2).toInt();
+            if (btnIdx >= 0 && btnIdx < BUTTON_COUNT) {
+                triggerButton((ButtonType)btnIdx);
+                
+                // ボタンごとのLEDパターン選択
+                if (btnIdx == 0) triggerLedPattern(PATTERN_ON_COUNT);
+                else if (btnIdx == 1) triggerLedPattern(PATTERN_OFF_COUNT);
+                else if (btnIdx == 2) triggerLedPattern(PATTERN_UP_COUNT);
+                else if (btnIdx == 3) triggerLedPattern(PATTERN_DOWN_COUNT);
+            }
         }
-        else if (value.startsWith("B,1")) { // 電源OFF
-            triggerButton(BTN_OFF);
-            triggerLedPattern(PATTERN_OFF_COUNT);
-        }
-        else if (value.startsWith("B,2")) { // 温度UP
-            triggerButton(BTN_UP);
-            triggerLedPattern(PATTERN_UP_COUNT);
-        }
-        else if (value.startsWith("B,3")) { // 温度DOWN
-            triggerButton(BTN_DOWN);
-            triggerLedPattern(PATTERN_DOWN_COUNT);
-        }
-        // 自動モード切替（LEDパターンは必要に応じて定義してください）
         else if (value.startsWith("A,")) {
             int mode = value.substring(2).toInt();
-            // 停止/開始時も何か光らせるならここで triggerLedPattern() を呼ぶ
             if (mode == 1) {
                 autoModeActive = true;
                 autoModeStartTime = millis();
-                currentHeaterState = HEATER_OFF; 
+                currentHeaterState = HEATER_OFF;
+                // 必要ならここで triggerLedPattern(パターン); を呼ぶ
             } else {
                 autoModeActive = false;
                 if (currentHeaterState != HEATER_OFF) {
-                    triggerButton(BTN_OFF); 
+                    triggerButton(BTN_OFF);
                     currentHeaterState = HEATER_OFF;
                 }
             }
         }
-        // 設定保存（S,）
         else if (value.startsWith("S,")) {
             int dur; float onT, offT, ductT;
             if (sscanf(value.c_str(), "S,%d,%f,%f,%f", &dur, &onT, &offT, &ductT) == 4) {
@@ -167,54 +170,15 @@ class MyCallbacks: public BLECharacteristicCallbacks {
                 targetOnTemp = onT;
                 targetOffTemp = offT;
                 ductThreshTemp = ductT;
-                    
+                
                 prefs.putInt("duration", autoModeMinutes);
                 prefs.putFloat("ontemp", targetOnTemp);
                 prefs.putFloat("offtemp", targetOffTemp);
                 prefs.putFloat("ductthresh", ductThreshTemp);
                 
-                // 設定保存成功時に4回点滅パターンを呼び出し
+                // 設定保存成功時のLEDパターン
                 triggerLedPattern(PATTERN_SETTING_COUNT);
-            }
-        }
-        if (value.length() > 0) {
-            Serial.print("BLE受信: "); Serial.println(value);
-
-            // B,インデックス (手動ボタン操作)
-            if (value.startsWith("B,")) {
-                int btnIdx = value.substring(2).toInt();
-                if (btnIdx >= 0 && btnIdx < BUTTON_COUNT) triggerButton((ButtonType)btnIdx);
-            }
-            // A,0または1 (自動モードトグル)
-            else if (value.startsWith("A,")) {
-                int mode = value.substring(2).toInt();
-                if (mode == 1) {
-                    autoModeActive = true;
-                    autoModeStartTime = millis();
-                    currentHeaterState = HEATER_OFF; 
-                } else {
-                    autoModeActive = false;
-                    if (currentHeaterState != HEATER_OFF) {
-                        triggerButton(BTN_OFF); 
-                        currentHeaterState = HEATER_OFF;
-                    }
-                }
-            }
-            // S,時間,ON温度,OFF温度,ダクト判定 (設定保存)
-            else if (value.startsWith("S,")) {
-                int dur; float onT, offT, ductT;
-                if (sscanf(value.c_str(), "S,%d,%f,%f,%f", &dur, &onT, &offT, &ductT) == 4) {
-                    autoModeMinutes = dur;
-                    targetOnTemp = onT;
-                    targetOffTemp = offT;
-                    ductThreshTemp = ductT;
-                    
-                    prefs.putInt("duration", autoModeMinutes);
-                    prefs.putFloat("ontemp", targetOnTemp);
-                    prefs.putFloat("offtemp", targetOffTemp);
-                    prefs.putFloat("ductthresh", ductThreshTemp);
-                    Serial.println("設定値を不揮発メモリへ保存完了");
-                }
+                Serial.println("設定値を不揮発メモリへ保存完了");
             }
         }
     }
