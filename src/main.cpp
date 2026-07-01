@@ -16,6 +16,21 @@ BLECharacteristic* pStatusChar = NULL;
 bool deviceConnected = false;
 
 // ==================== ピン・ボタン定義 ====================
+#ifdef TARGET_ESP32_S3
+  // ESP32-S3用のピン定義
+  #define PIN_ON    1   // 例: S3で使えるピンに変更
+  #define PIN_OFF   2
+  #define PIN_UP    3
+  #define PIN_DOWN  4
+#else
+  // 元のESP32用のピン定義
+  #define PIN_ON    25
+  #define PIN_OFF   26
+  #define PIN_UP    27
+  #define PIN_DOWN  14
+#endif
+
+// ==================== ピン・ボタン定義 ====================
 enum ButtonType { BTN_ON, BTN_OFF, BTN_UP, BTN_DOWN };
 
 struct ButtonPulse {
@@ -27,12 +42,14 @@ struct ButtonPulse {
     unsigned long nextPressTime;
 };
 
+// 初期化時に上記のマクロ判定ピンを配列に渡す
 ButtonPulse buttons[] = {
-    {25, "電源ON",   0, false, 0, 0},
-    {32, "電源OFF",  0, false, 0, 0},
-    {26, "温度上げ", 0, false, 0, 0},
-    {27, "温度下げ", 0, false, 0, 0}
+    {PIN_ON,   "電源ON",   0, false, 0, 0},
+    {PIN_OFF,  "電源OFF",  0, false, 0, 0},
+    {PIN_UP,   "UP",       0, false, 0, 0},
+    {PIN_DOWN, "DOWN",     0, false, 0, 0}
 };
+
 const int BUTTON_COUNT = sizeof(buttons) / sizeof(ButtonPulse);
 
 const int PIN_DHT_ROOM = 13; 
@@ -62,36 +79,76 @@ float currentDuctTemp = 0.0;
 
 // ==================== LED点滅パターン定義 ====================
 // 点滅間隔(ms)
-#define BLINK_INTERVAL_MS 200
-
-// 各ボタン・操作ごとの回数定義
-#define PATTERN_ON_COUNT      1  // 0.2秒間点灯(1回点滅/長め)
-#define PATTERN_OFF_COUNT     5  // 1秒間点灯(0.2s * 5回=1秒) ※回数で表現
-#define PATTERN_UP_COUNT      2  // 2回点滅
-#define PATTERN_DOWN_COUNT    3  // 3回点滅
-#define PATTERN_SETTING_COUNT 4  // 4回点滅
+// #define BLINK_INTERVAL_MS 200
 
 // ==================== LED制御用変数 ====================
 const int PIN_LED = 2;
-int remainingBlinks = 0;
-unsigned long nextBlinkTime = 0;
-bool ledState = false;
 
-// ボタンの種類とパターンを紐付け
-void triggerLedPattern(int count) {
-    remainingBlinks = count * 2; // ON/OFFの切り替え回数
-    ledState = false;
-    nextBlinkTime = millis();
+// --- LEDパターン管理 ---
+struct LedPattern {
+    const char* sequence;
+};
+
+enum LedPatternType {
+    PATTERN_ON,
+    PATTERN_OFF,
+    PATTERN_UP,
+    PATTERN_DOWN,
+    PATTERN_AUTO,
+    PATTERN_SETTING,
+    PATTERN_BLE_CONN,
+    PATTERN_EMERGENCY,
+    PATTERN_BLE_DISCONN, // 追加したいパターンもここに追加可能
+    PATTERN_COUNT        // パターンの総数を自動取得
+};
+// 8つのパターンを定義（ここを書き換えればいつでも変更可能）
+const LedPattern patterns[] = {
+    {"o-o"},         // PATTERN_ON
+    {"OO"},       // PATTERN_OFF
+    {"o-o"},     // PATTERN_UP
+    {"O-o-O"},     // PATTERN_DOWN
+    {"O-O-O"},       // PATTERN_AUTO
+    {"o-O-o-O"},     // PATTERN_SETTING
+    {"O-O"},       // PATTERN_BLE_CONN
+    {"o-o-o-O-O-O-o-o-o--o-o-o-O-O-O-o-o-o"},     // PATTERN_EMERGENCY
+    {"o-o-o-o-O"}    // PATTERN_BLE_DISCONN (追加分)
+};
+
+// 状態管理変数
+int currentStep = 0;
+const char* activeSequence = "";
+unsigned long lastChangeTime = 0;
+bool isPatternRunning = false;
+const int LED_PIN = 2; // お使いのボードのLEDピン番号に合わせてください
+
+
+// 引数の型を int ではなく LedPatternType に変更
+void startPattern(LedPatternType patternType) {
+    // 範囲外チェック（安全対策）
+    if (patternType < 0 || patternType >= PATTERN_COUNT) return;
+    
+    activeSequence = patterns[patternType].sequence;
+    currentStep = 0;
+    isPatternRunning = true;
+    lastChangeTime = 0;
 }
+
 // ==================== 関数定義 ====================
-void triggerButton(ButtonType btn) {
-    if (buttons[btn].pressCount > 0) return;
-    if (btn == BTN_ON || btn == BTN_OFF) {
-        buttons[btn].pressCount = 2;
+void triggerButton(ButtonType btnType) {
+    if (buttons[btnType].pressCount > 0) return;
+    if (btnType == BTN_ON || btnType == BTN_OFF) {
+        buttons[btnType].pressCount = 2;
     } else {
-        buttons[btn].pressCount = 1;
+        buttons[btnType].pressCount = 1;
     }
-    buttons[btn].nextPressTime = millis(); 
+    buttons[btnType].nextPressTime = millis(); 
+    // LEDパターン呼び出しの追加
+    switch (btnType) {
+        case BTN_ON:   startPattern(PATTERN_ON);   break;
+        case BTN_OFF:  startPattern(PATTERN_OFF);  break;
+        case BTN_UP:   startPattern(PATTERN_UP);   break;
+        case BTN_DOWN: startPattern(PATTERN_DOWN); break;
+    }
 }
 
 void updateButtonPulses() {
@@ -116,11 +173,15 @@ class MyServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
         deviceConnected = true;
         Serial.println("BLE: スマホと接続完了");
+        // 例：BLE接続が確立したとき (setup内やイベントハンドラ内)
+        startPattern(PATTERN_BLE_CONN); // BLE_CONN パターン開始
     }
     void onDisconnect(BLEServer* pServer) {
         deviceConnected = false;
+        startPattern(PATTERN_BLE_DISCONN); // ★ここが切断時のトリガー
         Serial.println("BLE: 切断検知。アドバタイズ再開");
-        BLEDevice::startAdvertising();
+        delay(500);
+        pServer->getAdvertising()->start();
     }
 };
 
@@ -131,7 +192,7 @@ class MyCallbacks: public BLECharacteristicCallbacks {
 
         Serial.print("BLE受信: "); Serial.println(value);
 
-        // 1. 受信確認(ACK)をスマホへ即座に送信
+        // 1. 受信確認(ACK)
         pStatusChar->setValue(("ACK," + value.substring(2)).c_str());
         pStatusChar->notify();
 
@@ -140,12 +201,11 @@ class MyCallbacks: public BLECharacteristicCallbacks {
             int btnIdx = value.substring(2).toInt();
             if (btnIdx >= 0 && btnIdx < BUTTON_COUNT) {
                 triggerButton((ButtonType)btnIdx);
-                
-                // ボタンごとのLEDパターン選択
-                if (btnIdx == 0) triggerLedPattern(PATTERN_ON_COUNT);
-                else if (btnIdx == 1) triggerLedPattern(PATTERN_OFF_COUNT);
-                else if (btnIdx == 2) triggerLedPattern(PATTERN_UP_COUNT);
-                else if (btnIdx == 3) triggerLedPattern(PATTERN_DOWN_COUNT);
+                startPattern((LedPatternType)btnIdx); // ★ここに追加：0:ON, 1:OFF, 2:UP, 3:DOWN がそのまま対応
+            }
+            // もし「B,STOP」のような独自のSTOPコマンドを作るならここに書く
+            else if (value == "B,STOP") {
+                startPattern(PATTERN_EMERGENCY); // ★EMERGENCYパターン
             }
         }
         else if (value.startsWith("A,")) {
@@ -154,12 +214,13 @@ class MyCallbacks: public BLECharacteristicCallbacks {
                 autoModeActive = true;
                 autoModeStartTime = millis();
                 currentHeaterState = HEATER_OFF;
-                // 必要ならここで triggerLedPattern(パターン); を呼ぶ
+                startPattern(PATTERN_AUTO); // ★AUTO開始パターン
             } else {
                 autoModeActive = false;
                 if (currentHeaterState != HEATER_OFF) {
                     triggerButton(BTN_OFF);
                     currentHeaterState = HEATER_OFF;
+                    startPattern(PATTERN_OFF); // ★OFFパターン
                 }
             }
         }
@@ -176,18 +237,45 @@ class MyCallbacks: public BLECharacteristicCallbacks {
                 prefs.putFloat("offtemp", targetOffTemp);
                 prefs.putFloat("ductthresh", ductThreshTemp);
                 
-                // 設定保存成功時のLEDパターン
-                triggerLedPattern(PATTERN_SETTING_COUNT);
+                startPattern(PATTERN_SETTING); // ★設定保存完了パターン
                 Serial.println("設定値を不揮発メモリへ保存完了");
             }
         }
     }
 };
+void updateLedPattern() {
+    if (!isPatternRunning) return;
+
+    unsigned long now = millis();
+    char cmd = activeSequence[currentStep];
+
+    if (cmd == '\0') {
+        digitalWrite(LED_PIN, LOW);
+        isPatternRunning = false;
+        return;
+    }
+
+    unsigned long duration = (cmd == 'O') ? 700 : 300;
+    
+    if (now - lastChangeTime >= duration) {
+        lastChangeTime = now;
+        if (cmd == '-') { digitalWrite(LED_PIN, LOW); }
+        else { digitalWrite(LED_PIN, HIGH); } // O または o
+        
+        // 消灯処理: 光る要素(O,o)の直後に必ず消灯時間を挟むロジック
+        if (cmd != '-') {
+            // 次のステップで消灯させるために少し待つ処理が必要な場合は調整
+        }
+        currentStep++;
+    }
+}
 
 // ==================== 初期設定 ====================
 void setup() {
     Serial.begin(115200);
-    
+    pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, LOW); // 初期状態は消灯
+
     for (int i = 0; i < BUTTON_COUNT; i++) {
         pinMode(buttons[i].pin, OUTPUT);
         digitalWrite(buttons[i].pin, LOW);
@@ -232,13 +320,9 @@ void setup() {
 
 // ==================== メインループ ====================
 void loop() {
-    // LED点滅ロジック (非同期)
-    if (remainingBlinks > 0 && millis() >= nextBlinkTime) {
-        ledState = !ledState;
-        digitalWrite(PIN_LED, ledState ? HIGH : LOW);
-        remainingBlinks--;
-        nextBlinkTime = millis() + BLINK_INTERVAL_MS;
-    }
+    // 追加：LED点滅処理を常に呼び出す
+    updateLedPattern();
+
     updateButtonPulses(); 
     
     static unsigned long lastSensorRead = 0;
