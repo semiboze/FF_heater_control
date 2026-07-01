@@ -180,7 +180,7 @@ document.getElementById('connectBtn').addEventListener('click', async () => {
             document.getElementById('statusTxt').innerText = "切断されました";
             cmdCharacteristic = null;
         });
-        document.getElementById('statusTxt').innerText = "接続中...";
+        document.getElementById('statusTxt').innerText = "接続交渉中...";
         const server = await bleDevice.gatt.connect();
         const service = await server.getPrimaryService(SERVICE_UUID);
         cmdCharacteristic = await service.getCharacteristic(CHAR_CMD_UUID);

@@ -186,26 +186,31 @@ class MyServerCallbacks: public BLEServerCallbacks {
 };
 
 class MyCallbacks: public BLECharacteristicCallbacks {
-    void onWrite(BLECharacteristic *pChar) {
+void onWrite(BLECharacteristic *pChar) {
         String value = pChar->getValue().c_str();
         if (value.length() == 0) return;
 
         Serial.print("BLE受信: "); Serial.println(value);
 
-        // 1. 受信確認(ACK)
+        // 1. 受信確認(ACK)をスマホへ即座に送信
         pStatusChar->setValue(("ACK," + value.substring(2)).c_str());
         pStatusChar->notify();
 
         // 2. パターン分岐とLED点滅、機能実行
         if (value.startsWith("B,")) {
-            int btnIdx = value.substring(2).toInt();
-            if (btnIdx >= 0 && btnIdx < BUTTON_COUNT) {
-                triggerButton((ButtonType)btnIdx);
-                startPattern((LedPatternType)btnIdx); // ★ここに追加：0:ON, 1:OFF, 2:UP, 3:DOWN がそのまま対応
-            }
-            // もし「B,STOP」のような独自のSTOPコマンドを作るならここに書く
-            else if (value == "B,STOP") {
-                startPattern(PATTERN_EMERGENCY); // ★EMERGENCYパターン
+            // ★まず「B,STOP」を個別に判定（先に判定することで誤動作を防ぐ）
+            if (value == "B,STOP") {
+                startPattern(PATTERN_EMERGENCY);
+                Serial.println("緊急停止コマンド受信");
+            } 
+            else {
+                // 通常のボタン操作
+                int btnIdx = value.substring(2).toInt();
+                if (btnIdx >= 0 && btnIdx < BUTTON_COUNT) {
+                    triggerButton((ButtonType)btnIdx);
+                    // ボタン操作に対応するパターン（0:ON, 1:OFF, 2:UP, 3:DOWN）
+                    startPattern((LedPatternType)btnIdx);
+                }
             }
         }
         else if (value.startsWith("A,")) {
@@ -214,13 +219,13 @@ class MyCallbacks: public BLECharacteristicCallbacks {
                 autoModeActive = true;
                 autoModeStartTime = millis();
                 currentHeaterState = HEATER_OFF;
-                startPattern(PATTERN_AUTO); // ★AUTO開始パターン
+                startPattern(PATTERN_AUTO);
             } else {
                 autoModeActive = false;
                 if (currentHeaterState != HEATER_OFF) {
                     triggerButton(BTN_OFF);
                     currentHeaterState = HEATER_OFF;
-                    startPattern(PATTERN_OFF); // ★OFFパターン
+                    startPattern(PATTERN_OFF);
                 }
             }
         }
@@ -237,7 +242,7 @@ class MyCallbacks: public BLECharacteristicCallbacks {
                 prefs.putFloat("offtemp", targetOffTemp);
                 prefs.putFloat("ductthresh", ductThreshTemp);
                 
-                startPattern(PATTERN_SETTING); // ★設定保存完了パターン
+                startPattern(PATTERN_SETTING);
                 Serial.println("設定値を不揮発メモリへ保存完了");
             }
         }
@@ -255,21 +260,23 @@ void updateLedPattern() {
         return;
     }
 
-    unsigned long duration = (cmd == 'O') ? 700 : 300;
+    // Oは600ms, oは200ms, -は200ms
+    unsigned long duration = (cmd == 'O') ? 600 : 200;
     
     if (now - lastChangeTime >= duration) {
         lastChangeTime = now;
-        if (cmd == '-') { digitalWrite(LED_PIN, LOW); }
-        else { digitalWrite(LED_PIN, HIGH); } // O または o
         
-        // 消灯処理: 光る要素(O,o)の直後に必ず消灯時間を挟むロジック
-        if (cmd != '-') {
-            // 次のステップで消灯させるために少し待つ処理が必要な場合は調整
+        // ★ステップ切り替わり時に必ず一度LEDを消す（これが重要！）
+        digitalWrite(LED_PIN, LOW);
+        
+        // 点灯指示(O,o)の場合のみ、LEDをONにする
+        if (cmd == 'O' || cmd == 'o') {
+            digitalWrite(LED_PIN, HIGH);
         }
+        
         currentStep++;
     }
 }
-
 // ==================== 初期設定 ====================
 void setup() {
     Serial.begin(115200);
