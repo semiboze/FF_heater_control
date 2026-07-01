@@ -1,0 +1,151 @@
+<mxfile host="app.diagrams.net">
+  <diagram name="ページ-1" id="8hXkujSHYk_aJZcSiOX_">
+    <mxGraphModel dx="1433" dy="2131" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <UserObject label="" mermaidData="{&#xa;  &quot;data&quot;: &quot;flowchart LR\n    subgraph \&quot;ユーザー操作\&quot;\n        Smartphone[\&quot;📱 スマートフォン\\n(BLEアプリ / 画面)\&quot;]\n    end\n\n    subgraph \&quot;親機：制御用 ESP32 (常時稼働)\&quot;\n        direction TB\n        MainMCU[\&quot;🧠 メインESP32\\n・BLE ⇔ スマホ\\n・ESP-NOW ⇔ センサー\\n・タイムアウト監視(フェイルセーフ)\&quot;]\n        PowerMain[\&quot;🔌 常時電源\\n(ポータブル電源 / DC-DC等)\&quot;]\n        PowerMain -.給電.-&gt; MainMCU\n    end\n\n    subgraph \&quot;子機：センサー用 ESP32 (Deep Sleep)\&quot;\n        direction TB\n        SubMCU[\&quot;💤 サブESP32\\n・1分ごとに起床し送信\\n・送信後はすぐにスリープ\&quot;]\n        Sensor1[\&quot;🌡️ DHT11 (天井)\&quot;]\n        Sensor2[\&quot;🌡️ DHT11 (ダクト)\&quot;]\n        Battery[\&quot;🔋 18650バッテリー\\n(長寿命駆動)\&quot;]\n        \n        Sensor1 --&gt;|温度・湿度| SubMCU\n        Sensor2 --&gt;|温度・湿度| SubMCU\n        Battery -.給電.-&gt; SubMCU\n    end\n\n    subgraph \&quot;操作対象\&quot;\n        direction TB\n        Remote[\&quot;🎛️ FFヒーターリモコン\&quot;]\n        Heater[\&quot;🔥 FFヒーター本体\&quot;]\n        Remote ===|専用ケーブル| Heater\n    end\n\n    %% 通信と物理配線の関係\n    Smartphone &lt;--&gt;|BLE通信 (双方向)\\n操作コマンド・状態確認| MainMCU\n    SubMCU --&gt;|ESP-NOW通信 (単方向)\\n構造体による軽量バイナリデータ| MainMCU\n    MainMCU ===|物理配線 (直結)\\nボタンピンのHIGH/LOW制御| Remote\n    \n    %% 色やスタイルの設定\n    classDef main fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#000;\n    classDef sub fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#000;\n    classDef external fill:#f5f5f5,stroke:#616161,stroke-width:1px,color:#000;\n    classDef item fill:#fff,stroke:#333,stroke-width:1px,color:#000;\n    \n    class MainMCU main;\n    class SubMCU sub;\n    class Smartphone,Remote,Heater external;\n    class Sensor1,Sensor2,Battery,PowerMain item;&quot;,&#xa;  &quot;config&quot;: null&#xa;}" id="NrShtkWtgtyb-EM5atUV-1">
+          <mxCell connectable="0" parent="1" style="group;transparentBounds=1;editIcon=1;lockedGroup=0;groupPadding=20;" vertex="1">
+            <mxGeometry height="300" width="2412" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <UserObject label="ユーザー操作" mermaidId="n:ユーザー操作" mermaidBaseStyle="html=1;whiteSpace=wrap;strokeWidth=1;verticalAlign=top;fillColor=light-dark(#ffffde,#1f2020);strokeColor=light-dark(#aaaa33,#cccccc);fontColor=light-dark(#333333,#cccccc);fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontSize=16;" mermaidBaseValue="ユーザー操作" id="NrShtkWtgtyb-EM5atUV-2">
+          <mxCell parent="NrShtkWtgtyb-EM5atUV-1" style="html=1;whiteSpace=wrap;strokeWidth=1;verticalAlign=top;fillColor=light-dark(#ffffde,#1f2020);strokeColor=light-dark(#aaaa33,#cccccc);fontColor=light-dark(#333333,#cccccc);fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontSize=16;" vertex="1">
+            <mxGeometry height="124" width="418" x="701" y="10" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <UserObject label="📱 スマートフォン&#xa;(BLEアプリ / 画面)" mermaidId="n:Smartphone" mermaidBaseStyle="html=1;whiteSpace=wrap;strokeWidth=1;fillColor=#f5f5f5;strokeColor=#616161;fontColor=default;fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontSize=16;" mermaidBaseValue="📱 スマートフォン&#xa;(BLEアプリ / 画面)" id="NrShtkWtgtyb-EM5atUV-3">
+          <mxCell parent="NrShtkWtgtyb-EM5atUV-2" style="html=1;whiteSpace=wrap;strokeWidth=1;fillColor=#f5f5f5;strokeColor=#616161;fontColor=default;fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontSize=16;" vertex="1">
+            <mxGeometry height="54" width="348" x="35" y="45" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <UserObject label="親機：制御用 ESP32 (常時稼働)" mermaidId="n:親機：制御用 ESP32 (常時稼働)" mermaidBaseStyle="html=1;whiteSpace=wrap;strokeWidth=1;verticalAlign=top;fillColor=light-dark(#ffffde,#1f2020);strokeColor=light-dark(#aaaa33,#cccccc);fontColor=light-dark(#333333,#cccccc);fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontSize=16;" mermaidBaseValue="親機：制御用 ESP32 (常時稼働)" id="NrShtkWtgtyb-EM5atUV-4">
+          <mxCell parent="NrShtkWtgtyb-EM5atUV-1" style="html=1;whiteSpace=wrap;strokeWidth=1;verticalAlign=top;fillColor=light-dark(#ffffde,#1f2020);strokeColor=light-dark(#aaaa33,#cccccc);fontColor=light-dark(#333333,#cccccc);fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontSize=16;" vertex="1">
+            <mxGeometry height="220" width="1080" x="30" y="174" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <UserObject label="🧠 メインESP32&#xa;・BLE ⇔ スマホ&#xa;・ESP-NOW ⇔ センサー&#xa;・タイムアウト監視(フェイルセーフ)" mermaidId="n:MainMCU" mermaidBaseStyle="html=1;whiteSpace=wrap;strokeWidth=2;fillColor=#e3f2fd;strokeColor=#1565c0;fontColor=default;fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontSize=16;" mermaidBaseValue="🧠 メインESP32&#xa;・BLE ⇔ スマホ&#xa;・ESP-NOW ⇔ センサー&#xa;・タイムアウト監視(フェイルセーフ)" id="NrShtkWtgtyb-EM5atUV-5">
+          <mxCell parent="NrShtkWtgtyb-EM5atUV-4" style="html=1;whiteSpace=wrap;strokeWidth=2;fillColor=#e3f2fd;strokeColor=#1565c0;fontColor=default;fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontSize=16;" vertex="1">
+            <mxGeometry height="116.26" width="465.8741379310347" x="593.0379310344829" y="70" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <UserObject label="🔌 常時電源&#xa;(ポータブル電源 / DC-DC等)" mermaidId="n:PowerMain" mermaidBaseStyle="html=1;whiteSpace=wrap;strokeWidth=1;fillColor=default;strokeColor=#333;fontColor=default;fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontSize=16;" mermaidBaseValue="🔌 常時電源&#xa;(ポータブル電源 / DC-DC等)" id="NrShtkWtgtyb-EM5atUV-6">
+          <mxCell parent="NrShtkWtgtyb-EM5atUV-4" style="html=1;whiteSpace=wrap;strokeWidth=1;fillColor=default;strokeColor=#333;fontColor=default;fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontSize=16;" vertex="1">
+            <mxGeometry height="72.88343558282209" width="210.9375" x="209.4849753694582" y="49.9961963190184" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <UserObject label="給電" mermaidId="e:PowerMain-&gt;MainMCU#0" mermaidBaseStyle="curved=1;dashed=1;dashPattern=2 3;fixDash=1;startArrow=none;endArrow=block;endSize=7;strokeColor=light-dark(#333333,#cccccc);html=1;fontSize=16;labelBackgroundColor=light-dark(#E8E8E88D,#2a2a2a8D);fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontColor=light-dark(#333333,#cccccc);exitX=1;exitY=0.5;entryX=0;entryY=0.06;" mermaidBaseValue="給電" id="NrShtkWtgtyb-EM5atUV-7">
+          <mxCell edge="1" parent="NrShtkWtgtyb-EM5atUV-4" source="NrShtkWtgtyb-EM5atUV-6" style="curved=1;dashed=1;dashPattern=2 3;fixDash=1;startArrow=none;endArrow=block;endSize=7;strokeColor=light-dark(#333333,#cccccc);html=1;fontSize=16;labelBackgroundColor=light-dark(#E8E8E88D,#2a2a2a8D);fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontColor=light-dark(#333333,#cccccc);exitX=1;exitY=0.5;entryX=0;entryY=0.06;rounded=0;" target="NrShtkWtgtyb-EM5atUV-5">
+            <mxGeometry relative="1" as="geometry">
+              <Array as="points">
+                <mxPoint x="452.61160714285717" y="97.17791411042944" />
+              </Array>
+            </mxGeometry>
+          </mxCell>
+        </UserObject>
+        <UserObject label="子機：センサー用 ESP32 (Deep Sleep)" mermaidId="n:子機：センサー用 ESP32 (Deep Sleep)" mermaidBaseStyle="html=1;whiteSpace=wrap;strokeWidth=1;verticalAlign=top;fillColor=light-dark(#ffffde,#1f2020);strokeColor=light-dark(#aaaa33,#cccccc);fontColor=light-dark(#333333,#cccccc);fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontSize=16;" mermaidBaseValue="子機：センサー用 ESP32 (Deep Sleep)" id="NrShtkWtgtyb-EM5atUV-8">
+          <mxCell parent="NrShtkWtgtyb-EM5atUV-1" style="html=1;whiteSpace=wrap;strokeWidth=1;verticalAlign=top;fillColor=light-dark(#ffffde,#1f2020);strokeColor=light-dark(#aaaa33,#cccccc);fontColor=light-dark(#333333,#cccccc);fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontSize=16;" vertex="1">
+            <mxGeometry height="332" width="1089" x="30" y="440" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <UserObject label="💤 サブESP32&#xa;・1分ごとに起床し送信&#xa;・送信後はすぐにスリープ" mermaidId="n:SubMCU" mermaidBaseStyle="html=1;whiteSpace=wrap;strokeWidth=2;fillColor=#e8f5e9;strokeColor=#2e7d32;fontColor=default;fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontSize=16;" mermaidBaseValue="💤 サブESP32&#xa;・1分ごとに起床し送信&#xa;・送信後はすぐにスリープ" id="NrShtkWtgtyb-EM5atUV-9">
+          <mxCell parent="NrShtkWtgtyb-EM5atUV-8" style="html=1;whiteSpace=wrap;strokeWidth=2;fillColor=#e8f5e9;strokeColor=#2e7d32;fontColor=default;fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontSize=16;" vertex="1">
+            <mxGeometry height="111" width="275" x="505" y="149" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <UserObject label="🌡️ DHT11 (天井)" mermaidId="n:Sensor1" mermaidBaseStyle="html=1;whiteSpace=wrap;strokeWidth=1;fillColor=default;strokeColor=#333;fontColor=default;fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontSize=16;" mermaidBaseValue="🌡️ DHT11 (天井)" id="NrShtkWtgtyb-EM5atUV-10">
+          <mxCell parent="NrShtkWtgtyb-EM5atUV-8" style="html=1;whiteSpace=wrap;strokeWidth=1;fillColor=default;strokeColor=#333;fontColor=default;fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontSize=16;" vertex="1">
+            <mxGeometry height="54" width="182" x="102" y="253" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <UserObject label="🌡️ DHT11 (ダクト)" mermaidId="n:Sensor2" mermaidBaseStyle="html=1;whiteSpace=wrap;strokeWidth=1;fillColor=default;strokeColor=#333;fontColor=default;fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontSize=16;" mermaidBaseValue="🌡️ DHT11 (ダクト)" id="NrShtkWtgtyb-EM5atUV-11">
+          <mxCell parent="NrShtkWtgtyb-EM5atUV-8" style="html=1;whiteSpace=wrap;strokeWidth=1;fillColor=default;strokeColor=#333;fontColor=default;fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontSize=16;" vertex="1">
+            <mxGeometry height="54" width="198" x="94" y="149" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <UserObject label="🔋 18650バッテリー&#xa;(長寿命駆動)" mermaidId="n:Battery" mermaidBaseStyle="html=1;whiteSpace=wrap;strokeWidth=1;fillColor=default;strokeColor=#333;fontColor=default;fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontSize=16;" mermaidBaseValue="🔋 18650バッテリー&#xa;(長寿命駆動)" id="NrShtkWtgtyb-EM5atUV-12">
+          <mxCell parent="NrShtkWtgtyb-EM5atUV-8" style="html=1;whiteSpace=wrap;strokeWidth=1;fillColor=default;strokeColor=#333;fontColor=default;fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontSize=16;" vertex="1">
+            <mxGeometry height="54" width="315" x="35" y="45" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <UserObject label="温度・湿度" mermaidId="e:Sensor1-&gt;SubMCU#0" mermaidBaseStyle="curved=1;startArrow=none;endArrow=block;endSize=7;strokeColor=light-dark(#333333,#cccccc);html=1;fontSize=16;labelBackgroundColor=light-dark(#E8E8E88D,#2a2a2a8D);fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontColor=light-dark(#333333,#cccccc);exitX=1;exitY=0.5;entryX=0.36;entryY=1;" mermaidBaseValue="温度・湿度" id="NrShtkWtgtyb-EM5atUV-13">
+          <mxCell edge="1" parent="NrShtkWtgtyb-EM5atUV-8" source="NrShtkWtgtyb-EM5atUV-10" style="curved=1;startArrow=none;endArrow=block;endSize=7;strokeColor=light-dark(#333333,#cccccc);html=1;fontSize=16;labelBackgroundColor=light-dark(#E8E8E88D,#2a2a2a8D);fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontColor=light-dark(#333333,#cccccc);exitX=1;exitY=0.5;entryX=0.36;entryY=1;rounded=0;" target="NrShtkWtgtyb-EM5atUV-9">
+            <mxGeometry relative="1" as="geometry">
+              <Array as="points">
+                <mxPoint x="415" y="280" />
+                <mxPoint x="480" y="280" />
+              </Array>
+            </mxGeometry>
+          </mxCell>
+        </UserObject>
+        <UserObject label="温度・湿度" mermaidId="e:Sensor2-&gt;SubMCU#0" mermaidBaseStyle="curved=1;startArrow=none;endArrow=block;endSize=7;strokeColor=light-dark(#333333,#cccccc);html=1;fontSize=16;labelBackgroundColor=light-dark(#E8E8E88D,#2a2a2a8D);fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontColor=light-dark(#333333,#cccccc);exitX=1;exitY=0.5;entryX=0;entryY=0.5;" mermaidBaseValue="温度・湿度" id="NrShtkWtgtyb-EM5atUV-14">
+          <mxCell edge="1" parent="NrShtkWtgtyb-EM5atUV-8" source="NrShtkWtgtyb-EM5atUV-11" style="curved=1;startArrow=none;endArrow=block;endSize=7;strokeColor=light-dark(#333333,#cccccc);html=1;fontSize=16;labelBackgroundColor=light-dark(#E8E8E88D,#2a2a2a8D);fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontColor=light-dark(#333333,#cccccc);exitX=1;exitY=0.5;entryX=0;entryY=0.5;rounded=0;" target="NrShtkWtgtyb-EM5atUV-9">
+            <mxGeometry relative="1" as="geometry">
+              <Array as="points" />
+            </mxGeometry>
+          </mxCell>
+        </UserObject>
+        <UserObject label="給電" mermaidId="e:Battery-&gt;SubMCU#0" mermaidBaseStyle="curved=1;dashed=1;dashPattern=2 3;fixDash=1;startArrow=none;endArrow=block;endSize=7;strokeColor=light-dark(#333333,#cccccc);html=1;fontSize=16;labelBackgroundColor=light-dark(#E8E8E88D,#2a2a2a8D);fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontColor=light-dark(#333333,#cccccc);exitX=1;exitY=0.5;entryX=0.36;entryY=0;" mermaidBaseValue="給電" id="NrShtkWtgtyb-EM5atUV-15">
+          <mxCell edge="1" parent="NrShtkWtgtyb-EM5atUV-8" source="NrShtkWtgtyb-EM5atUV-12" style="curved=1;dashed=1;dashPattern=2 3;fixDash=1;startArrow=none;endArrow=block;endSize=7;strokeColor=light-dark(#333333,#cccccc);html=1;fontSize=16;labelBackgroundColor=light-dark(#E8E8E88D,#2a2a2a8D);fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontColor=light-dark(#333333,#cccccc);exitX=1;exitY=0.5;entryX=0.36;entryY=0;rounded=0;" target="NrShtkWtgtyb-EM5atUV-9">
+            <mxGeometry relative="1" as="geometry">
+              <Array as="points">
+                <mxPoint x="415" y="72" />
+                <mxPoint x="480" y="72" />
+              </Array>
+            </mxGeometry>
+          </mxCell>
+        </UserObject>
+        <UserObject label="操作対象" mermaidId="n:操作対象" mermaidBaseStyle="html=1;whiteSpace=wrap;strokeWidth=1;verticalAlign=top;fillColor=light-dark(#ffffde,#1f2020);strokeColor=light-dark(#aaaa33,#cccccc);fontColor=light-dark(#333333,#cccccc);fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontSize=16;" mermaidBaseValue="操作対象" id="NrShtkWtgtyb-EM5atUV-16">
+          <mxCell parent="NrShtkWtgtyb-EM5atUV-1" style="html=1;whiteSpace=wrap;strokeWidth=1;verticalAlign=top;fillColor=light-dark(#ffffde,#1f2020);strokeColor=light-dark(#aaaa33,#cccccc);fontColor=light-dark(#333333,#cccccc);fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontSize=16;" vertex="1">
+            <mxGeometry height="124" width="647" x="40" y="10" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <UserObject label="🎛️ FFヒーターリモコン" mermaidId="n:Remote" mermaidBaseStyle="html=1;whiteSpace=wrap;strokeWidth=1;fillColor=#f5f5f5;strokeColor=#616161;fontColor=default;fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontSize=16;" mermaidBaseValue="🎛️ FFヒーターリモコン" id="NrShtkWtgtyb-EM5atUV-17">
+          <mxCell parent="NrShtkWtgtyb-EM5atUV-16" style="html=1;whiteSpace=wrap;strokeWidth=1;fillColor=#f5f5f5;strokeColor=#616161;fontColor=default;fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontSize=16;" vertex="1">
+            <mxGeometry height="54" width="232" x="35" y="45" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <UserObject label="🔥 FFヒーター本体" mermaidId="n:Heater" mermaidBaseStyle="html=1;whiteSpace=wrap;strokeWidth=1;fillColor=#f5f5f5;strokeColor=#616161;fontColor=default;fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontSize=16;" mermaidBaseValue="🔥 FFヒーター本体" id="NrShtkWtgtyb-EM5atUV-18">
+          <mxCell parent="NrShtkWtgtyb-EM5atUV-16" style="html=1;whiteSpace=wrap;strokeWidth=1;fillColor=#f5f5f5;strokeColor=#616161;fontColor=default;fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontSize=16;" vertex="1">
+            <mxGeometry height="54" width="200" x="412" y="45" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <mxCell id="NrShtkWtgtyb-EM5atUV-28" edge="1" parent="NrShtkWtgtyb-EM5atUV-16" source="NrShtkWtgtyb-EM5atUV-17" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.634;entryY=0.484;entryDx=0;entryDy=0;entryPerimeter=0;" target="NrShtkWtgtyb-EM5atUV-16">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <UserObject label="BLE通信 (双方向)&#xa;操作コマンド・状態確認" mermaidId="e:Smartphone-&gt;MainMCU#0" mermaidBaseStyle="curved=1;startArrow=block;startSize=7;endArrow=block;endSize=7;strokeColor=light-dark(#333333,#cccccc);html=1;fontSize=16;labelBackgroundColor=light-dark(#E8E8E88D,#2a2a2a8D);fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontColor=light-dark(#333333,#cccccc);exitX=1;exitY=0.5;entryX=0;entryY=0.94;" mermaidBaseValue="BLE通信 (双方向)&#xa;操作コマンド・状態確認" id="NrShtkWtgtyb-EM5atUV-20">
+          <mxCell edge="1" parent="NrShtkWtgtyb-EM5atUV-1" source="NrShtkWtgtyb-EM5atUV-3" style="curved=1;startArrow=block;startSize=7;endArrow=block;endSize=7;strokeColor=light-dark(#333333,#cccccc);html=1;fontSize=16;labelBackgroundColor=light-dark(#E8E8E88D,#2a2a2a8D);fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontColor=light-dark(#333333,#cccccc);exitX=1;exitY=0.5;entryX=1;entryY=0;rounded=0;entryDx=0;entryDy=0;" target="NrShtkWtgtyb-EM5atUV-5">
+            <mxGeometry relative="1" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <UserObject label="ESP-NOW通信 (単方向)&#xa;構造体による軽量バイナリデータ" mermaidId="e:SubMCU-&gt;MainMCU#0" mermaidBaseStyle="curved=1;startArrow=none;endArrow=block;endSize=7;strokeColor=light-dark(#333333,#cccccc);html=1;fontSize=16;labelBackgroundColor=light-dark(#E8E8E88D,#2a2a2a8D);fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontColor=light-dark(#333333,#cccccc);exitX=1;exitY=0.5;entryX=0;entryY=0.5;" mermaidBaseValue="ESP-NOW通信 (単方向)&#xa;構造体による軽量バイナリデータ" id="NrShtkWtgtyb-EM5atUV-21">
+          <mxCell edge="1" parent="NrShtkWtgtyb-EM5atUV-1" source="NrShtkWtgtyb-EM5atUV-9" style="curved=1;startArrow=none;endArrow=block;endSize=7;strokeColor=light-dark(#333333,#cccccc);html=1;fontSize=16;labelBackgroundColor=light-dark(#E8E8E88D,#2a2a2a8D);fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontColor=light-dark(#333333,#cccccc);exitX=1;exitY=0.5;entryX=1;entryY=1;rounded=0;entryDx=0;entryDy=0;" target="NrShtkWtgtyb-EM5atUV-5">
+            <mxGeometry relative="1" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <UserObject label="物理配線 (直結)&#xa;ボタンピンのHIGH/LOW制御" mermaidId="e:MainMCU-&gt;Remote#0" mermaidBaseStyle="curved=1;startArrow=none;endArrow=none;strokeWidth=3.5;endSize=3;startSize=3;strokeColor=light-dark(#333333,#cccccc);html=1;fontSize=16;labelBackgroundColor=light-dark(#E8E8E88D,#2a2a2a8D);fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontColor=light-dark(#333333,#cccccc);exitX=1;exitY=0.5;entryX=0;entryY=0.5;" mermaidBaseValue="物理配線 (直結)&#xa;ボタンピンのHIGH/LOW制御" id="NrShtkWtgtyb-EM5atUV-22">
+          <mxCell edge="1" parent="NrShtkWtgtyb-EM5atUV-1" source="NrShtkWtgtyb-EM5atUV-5" style="curved=1;startArrow=none;endArrow=none;strokeWidth=3.5;endSize=3;startSize=3;strokeColor=light-dark(#333333,#cccccc);html=1;fontSize=16;labelBackgroundColor=light-dark(#E8E8E88D,#2a2a2a8D);fontFamily=Trebuchet MS,Verdana,Arial,sans-serif;fontColor=light-dark(#333333,#cccccc);exitX=0;exitY=1;entryX=0;entryY=0.5;rounded=0;exitDx=0;exitDy=0;" target="NrShtkWtgtyb-EM5atUV-17">
+            <mxGeometry relative="1" x="-0.1067" y="-82" as="geometry">
+              <mxPoint as="offset" />
+              <Array as="points">
+                <mxPoint x="90" y="430" />
+              </Array>
+            </mxGeometry>
+          </mxCell>
+        </UserObject>
+        <mxCell id="NrShtkWtgtyb-EM5atUV-25" edge="1" parent="1" style="edgeStyle=entityRelationEdgeStyle;fontSize=12;html=1;endArrow=ERone;endFill=1;rounded=0;" value="">
+          <mxGeometry height="100" relative="1" width="100" as="geometry">
+            <mxPoint x="630" y="540" as="sourcePoint" />
+            <mxPoint x="730" y="440" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="NrShtkWtgtyb-EM5atUV-27" edge="1" parent="1" style="endArrow=classic;html=1;rounded=0;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="660" y="520" as="sourcePoint" />
+            <mxPoint x="710" y="470" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
