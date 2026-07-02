@@ -1,10 +1,27 @@
 #include <Arduino.h>
+#include <esp_now.h>
+#include <WiFi.h>
 #include <Preferences.h>
-#include <DHT.h>
+// DHT等のライブラリは不要になりますが、コンパイルエラー回避のため残す場合は適宜修正してください
+
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+
+// ==================== データ構造 (センサー側と一致させる) ====================
+typedef struct {
+    uint8_t version;
+    float roomTemp;
+    float roomHum;
+    float ductTemp;
+    float ductHum;
+    float batteryVoltage;
+} SensorData;
+
+SensorData receivedData;
+unsigned long lastReceivedTime = 0; // 通信監視用
+const unsigned long TIMEOUT_THRESHOLD = 15000; // 15秒届かなければ異常検知
 
 // ==================== BLE UUID設定 ====================
 #define SERVICE_UUID           "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
@@ -52,10 +69,10 @@ ButtonPulse buttons[] = {
 
 const int BUTTON_COUNT = sizeof(buttons) / sizeof(ButtonPulse);
 
-const int PIN_DHT_ROOM = 13; 
-const int PIN_DHT_DUCT = 14; 
-DHT dhtRoom(PIN_DHT_ROOM, DHT11);
-DHT dhtDuct(PIN_DHT_DUCT, DHT11);
+// const int PIN_DHT_ROOM = 13; 
+// const int PIN_DHT_DUCT = 14; 
+// DHT dhtRoom(PIN_DHT_ROOM, DHT11);
+// DHT dhtDuct(PIN_DHT_DUCT, DHT11);
 
 // ==================== グローバル制御変数 ====================
 Preferences prefs;
@@ -121,7 +138,20 @@ unsigned long lastChangeTime = 0;
 bool isPatternRunning = false;
 const int LED_PIN = 2; // お使いのボードのLEDピン番号に合わせてください
 
-
+// ==================== ESP-NOW 受信コールバック ====================
+void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
+    Serial.println("ESP-NOWを受信しました！"); // ←これが出るか確認
+    
+    // データの中身を直接表示してみる
+    SensorData temp;
+    memcpy(&temp, incomingData, sizeof(temp));
+    Serial.printf("受信した温度: %.1f\n", temp.roomTemp);
+    
+    memcpy((void*)&receivedData, incomingData, sizeof(receivedData));
+    currentRoomTemp = receivedData.roomTemp;
+    currentDuctTemp = receivedData.ductTemp;
+    lastReceivedTime = millis();
+}
 // 引数の型を int ではなく LedPatternType に変更
 void startPattern(LedPatternType patternType) {
     // 範囲外チェック（安全対策）
@@ -280,6 +310,24 @@ void updateLedPattern() {
 // ==================== 初期設定 ====================
 void setup() {
     Serial.begin(115200);
+
+    // WiFiをSTAモードにしてESP-NOW初期化
+    WiFi.mode(WIFI_STA);
+    if (esp_now_init() != ESP_OK) {
+        Serial.println("Error initializing ESP-NOW");
+    }
+    // 受信側（main_control.cpp）の setup() 内に追加
+    esp_now_peer_info_t peerInfo = {};
+    uint8_t senderMac[] = {0xEC, 0x61, 0x60, 0x93, 0xf8, 0x14};
+    memcpy(peerInfo.peer_addr, senderMac, 6);
+    peerInfo.channel = 1;
+    peerInfo.encrypt = false;
+
+    if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+        Serial.println("Failed to add sender peer");
+    }
+
+    esp_now_register_recv_cb(OnDataRecv);
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW); // 初期状態は消灯
 
@@ -288,8 +336,8 @@ void setup() {
         digitalWrite(buttons[i].pin, LOW);
     }
     
-    dhtRoom.begin();
-    dhtDuct.begin();
+    // dhtRoom.begin();
+    // dhtDuct.begin();
     
     prefs.begin("heater-config", false);
     autoModeMinutes = prefs.getInt("duration", 60);
@@ -332,13 +380,22 @@ void loop() {
 
     updateButtonPulses(); 
     
-    static unsigned long lastSensorRead = 0;
-    if (millis() - lastSensorRead >= 2000) {
-        lastSensorRead = millis();
-        float r = dhtRoom.readTemperature();
-        float d = dhtDuct.readTemperature();
-        if (!isnan(r)) currentRoomTemp = r;
-        if (!isnan(d)) currentDuctTemp = d;
+    // ★通信監視フェイルセーフ
+    if (millis() - lastReceivedTime > TIMEOUT_THRESHOLD) {
+        // 通信が途絶えた場合の安全措置
+        if (currentHeaterState != HEATER_OFF) {
+            Serial.println("【警告】センサー通信途絶！ヒーターを強制停止します");
+            triggerButton(BTN_OFF);
+            currentHeaterState = HEATER_OFF;
+            startPattern(PATTERN_EMERGENCY);
+        }
+        // 必要に応じてLED等でエラーを表示し続ける
+    }
+
+static unsigned long lastStatusNotify = 0;
+    // 2秒ごとにスマホへステータスを通知
+    if (millis() - lastStatusNotify >= 2000) {
+        lastStatusNotify = millis();
         
         // BLE接続中のみステータスを送信
         if (deviceConnected) {
@@ -348,7 +405,7 @@ void loop() {
                 if (remaining < 0) remaining = 0;
             }
             
-            // CSV形式で送信 "R,室温,ダクト温,自動モード,状態,残り秒数,設定タイマー,ON温,OFF温,ダクト温"
+            // CSV形式で送信
             char statusStr[128];
             snprintf(statusStr, sizeof(statusStr), "R,%.1f,%.1f,%d,%d,%ld,%d,%.1f,%.1f,%.1f",
                      currentRoomTemp, currentDuctTemp, autoModeActive ? 1 : 0, currentHeaterState, remaining,
