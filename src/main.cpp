@@ -42,9 +42,9 @@ bool deviceConnected = false;
 #else
   // 元のESP32用のピン定義
   #define PIN_ON    25
-  #define PIN_OFF   26
-  #define PIN_UP    27
-  #define PIN_DOWN  14
+  #define PIN_OFF   32
+  #define PIN_UP    26
+  #define PIN_DOWN  27
 #endif
 
 // ==================== ピン・ボタン定義 ====================
@@ -405,11 +405,14 @@ static unsigned long lastStatusNotify = 0;
                 if (remaining < 0) remaining = 0;
             }
             
-            // CSV形式で送信
+            // 【追加】最後にデータを受信してからの経過時間（秒）を計算
+            unsigned long dataAgeSeconds = (millis() - lastReceivedTime) / 1000;
+            
+            // 【修正】CSV形式のフォーマット指定子に %lu を追加し、dataAgeSeconds を末尾に付与
             char statusStr[128];
-            snprintf(statusStr, sizeof(statusStr), "R,%.1f,%.1f,%d,%d,%ld,%d,%.1f,%.1f,%.1f",
+            snprintf(statusStr, sizeof(statusStr), "R,%.1f,%.1f,%d,%d,%ld,%d,%.1f,%.1f,%.1f,%lu",
                      currentRoomTemp, currentDuctTemp, autoModeActive ? 1 : 0, currentHeaterState, remaining,
-                     autoModeMinutes, targetOnTemp, targetOffTemp, ductThreshTemp);
+                     autoModeMinutes, targetOnTemp, targetOffTemp, ductThreshTemp, dataAgeSeconds);
             
             pStatusChar->setValue(statusStr);
             pStatusChar->notify();

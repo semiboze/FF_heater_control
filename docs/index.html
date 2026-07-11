@@ -29,6 +29,7 @@
     <h3>現在のステータス</h3>
     <p>室内温度: <strong><span id="rTemp">--</span> ℃</strong></p>
     <p>ダクト温度: <strong><span id="dTemp">--</span> ℃</strong></p>
+    <p style="font-size: 0.9em; color: #555;">センサー最終更新: <strong><span id="dataAge">--</span> 秒前</strong></p>
     <p>自動制御モード: <strong><span id="autoState">無効（停止中）</span></strong></p>
     <p>残り時間: <strong><span id="remainTime">--</span></strong></p>
     <p>ヒーター仮想状態: <strong><span id="heaterState">停止中(OFF)</span></strong></p>
@@ -204,6 +205,12 @@ function handleStatusUpdate(event) {
     if (parts[0] === 'R' && parts.length >= 10) {
         document.getElementById('rTemp').innerText = parseFloat(parts[1]).toFixed(1);
         document.getElementById('dTemp').innerText = parseFloat(parts[2]).toFixed(1);
+        
+        // ★ ここに経過時間の表示処理を追記
+        if (parts.length >= 11) {
+            document.getElementById('dataAge').innerText = parts[10];
+        }
+
         document.getElementById('autoState').innerText = parts[3] === '1' ? "有効（稼働中）" : "無効（停止中）";
         
         const remSec = parseInt(parts[5]);
