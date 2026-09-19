@@ -31,6 +31,8 @@ const unsigned long TIMEOUT_THRESHOLD = 15000; // 15秒届かなければ異常�
 BLEServer* pServer = NULL;
 BLECharacteristic* pStatusChar = NULL;
 bool deviceConnected = false;
+// ==================== 1. グローバル変数の追加 ====================
+bool oldDeviceConnected = false; // ★追加：状態遷移監視用
 
 // ==================== ピン・ボタン定義 ====================
 #ifdef TARGET_ESP32_S3
@@ -163,16 +165,15 @@ void startPattern(LedPatternType patternType) {
     lastChangeTime = 0;
 }
 
-// ==================== 関数定義 ====================
+// ==================== 3. ボタン処理関数の修正 ====================
+// 信号を1回に統一し、パルス幅を短く（200ms）します
 void triggerButton(ButtonType btnType) {
     if (buttons[btnType].pressCount > 0) return;
-    if (btnType == BTN_ON || btnType == BTN_OFF) {
-        buttons[btnType].pressCount = 2;
-    } else {
-        buttons[btnType].pressCount = 1;
-    }
+    
+    // ★すべてのボタンを1回送信に統一
+    buttons[btnType].pressCount = 1;
     buttons[btnType].nextPressTime = millis(); 
-    // LEDパターン呼び出しの追加
+    
     switch (btnType) {
         case BTN_ON:   startPattern(PATTERN_ON);   break;
         case BTN_OFF:  startPattern(PATTERN_OFF);  break;
@@ -187,31 +188,31 @@ void updateButtonPulses() {
         if (buttons[i].isPinHigh && currentMillis >= buttons[i].turnOffTime) {
             digitalWrite(buttons[i].pin, LOW);
             buttons[i].isPinHigh = false;
-            buttons[i].nextPressTime = currentMillis + 1000;
+            buttons[i].nextPressTime = currentMillis + 500;
         }
         if (!buttons[i].isPinHigh && buttons[i].pressCount > 0 && currentMillis >= buttons[i].nextPressTime) {
             digitalWrite(buttons[i].pin, HIGH);
             buttons[i].isPinHigh = true;
-            buttons[i].turnOffTime = currentMillis + 500; 
+            // ★500msだと「連続押し」判定されるため、200msに変更
+            buttons[i].turnOffTime = currentMillis + 200; 
             buttons[i].pressCount--;                      
         }
     }
 }
 
-// ==================== BLEコールバック処理 ====================
+// ==================== 2. BLEコールバック処理の修正 ====================
+// delayを排除し、状態のフラグ変更のみに留めます
 class MyServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
         deviceConnected = true;
         Serial.println("BLE: スマホと接続完了");
-        // 例：BLE接続が確立したとき (setup内やイベントハンドラ内)
-        startPattern(PATTERN_BLE_CONN); // BLE_CONN パターン開始
+        startPattern(PATTERN_BLE_CONN);
     }
     void onDisconnect(BLEServer* pServer) {
         deviceConnected = false;
-        startPattern(PATTERN_BLE_DISCONN); // ★ここが切断時のトリガー
-        Serial.println("BLE: 切断検知。アドバタイズ再開");
-        delay(500);
-        pServer->getAdvertising()->start();
+        startPattern(PATTERN_BLE_DISCONN); 
+        Serial.println("BLE: 切断検知。");
+        // ★ここにあった delay(500) と pServer->getAdvertising()->start() を削除
     }
 };
 
@@ -375,12 +376,22 @@ void setup() {
 
 // ==================== メインループ ====================
 void loop() {
-    // 追加：LED点滅処理を常に呼び出す
     updateLedPattern();
-
     updateButtonPulses(); 
     
-    // ★通信監視フェイルセーフ
+    // ★追加: BLE切断時の安全なアドバタイズ再開処理をloop内に逃がす
+    if (!deviceConnected && oldDeviceConnected) {
+        delay(500); 
+        pServer->getAdvertising()->start();
+        Serial.println("BLE: アドバタイズ再開");
+        oldDeviceConnected = deviceConnected;
+    }
+    // ★追加: BLE接続時の状態更新
+    if (deviceConnected && !oldDeviceConnected) {
+        oldDeviceConnected = deviceConnected;
+    }
+    
+    // ★通信監視フェイルセーフ (以降は既存のコードそのまま)
     if (millis() - lastReceivedTime > TIMEOUT_THRESHOLD) {
         // 通信が途絶えた場合の安全措置
         if (currentHeaterState != HEATER_OFF) {
@@ -392,7 +403,7 @@ void loop() {
         // 必要に応じてLED等でエラーを表示し続ける
     }
 
-static unsigned long lastStatusNotify = 0;
+    static unsigned long lastStatusNotify = 0;
     // 2秒ごとにスマホへステータスを通知
     if (millis() - lastStatusNotify >= 2000) {
         lastStatusNotify = millis();
