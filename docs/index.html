@@ -170,6 +170,15 @@ const CHAR_STATUS_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
 const CHAR_CMD_UUID = '8c772be5-e0d0-4251-bb5c-1f6874eb7310';
 let bleDevice, cmdCharacteristic;
 
+// ★追加：ボタンの有効/無効を切り替える関数（問3対策）
+function setControlsEnabled(enabled) {
+    const buttons = document.querySelectorAll('.card button');
+    buttons.forEach(btn => btn.disabled = !enabled);
+}
+
+// ページ読み込み時はボタンを無効にしておく
+window.addEventListener('load', () => { setControlsEnabled(false); });
+
 document.getElementById('connectBtn').addEventListener('click', async () => {
     if (!navigator.bluetooth) { alert("Web Bluetooth API非対応ブラウザです。"); return; }
     try {
@@ -177,20 +186,42 @@ document.getElementById('connectBtn').addEventListener('click', async () => {
             filters: [{ name: 'FF_Heater' }],
             optionalServices: [SERVICE_UUID]
         });
+        
+        // ★修正：BLEが切断されたときの処理（問3対策）
         bleDevice.addEventListener('gattserverdisconnected', () => {
             document.getElementById('statusTxt').innerText = "切断されました";
+            document.getElementById('statusTxt').style.color = "red";
             cmdCharacteristic = null;
+            
+            // 温度と秒数をリセット
+            document.getElementById('rTemp').innerText = "--";
+            document.getElementById('dTemp').innerText = "--";
+            document.getElementById('dataAge').innerText = "--";
+            
+            // ボタンをグレーアウトして誤操作を防ぐ
+            setControlsEnabled(false);
         });
+        
         document.getElementById('statusTxt').innerText = "接続交渉中...";
+        document.getElementById('statusTxt').style.color = "black";
+        
         const server = await bleDevice.gatt.connect();
         const service = await server.getPrimaryService(SERVICE_UUID);
         cmdCharacteristic = await service.getCharacteristic(CHAR_CMD_UUID);
         const statusChar = await service.getCharacteristic(CHAR_STATUS_UUID);
+        
         await statusChar.startNotifications();
         statusChar.addEventListener('characteristicvaluechanged', handleStatusUpdate);
+        
         document.getElementById('statusTxt').innerText = "接続完了 (通信中)";
+        document.getElementById('statusTxt').style.color = "blue";
+        
+        // 接続完了でボタンを有効化
+        setControlsEnabled(true);
+        
     } catch (e) {
         document.getElementById('statusTxt').innerText = "エラー: " + e.message;
+        document.getElementById('statusTxt').style.color = "red";
     }
 });
 
@@ -199,16 +230,27 @@ function handleStatusUpdate(event) {
 
     // 追記：ACK受信時のメッセージ表示
     if (parts[0] === 'ACK') {
-        showFeedback("コマンド受信完了");
+        alert("ヒーターがコマンドを受信しました"); // 未定義のshowFeedbackをalertに変更
         return;
     }
+    
     if (parts[0] === 'R' && parts.length >= 10) {
-        document.getElementById('rTemp').innerText = parseFloat(parts[1]).toFixed(1);
-        document.getElementById('dTemp').innerText = parseFloat(parts[2]).toFixed(1);
-        
-        // ★ ここに経過時間の表示処理を追記
+        let dataAge = 0;
         if (parts.length >= 11) {
-            document.getElementById('dataAge').innerText = parts[10];
+            dataAge = parseInt(parts[10]);
+        }
+        
+        // ★追加：90秒以上データが来ていなければエラー表示（問1対策）
+        if (dataAge > 90) {
+            document.getElementById('rTemp').innerText = "エラー";
+            document.getElementById('dTemp').innerText = "エラー";
+            document.getElementById('dataAge').innerText = dataAge + " (通信途絶)";
+            document.getElementById('dataAge').style.color = "red";
+        } else {
+            document.getElementById('rTemp').innerText = parseFloat(parts[1]).toFixed(1);
+            document.getElementById('dTemp').innerText = parseFloat(parts[2]).toFixed(1);
+            document.getElementById('dataAge').innerText = dataAge;
+            document.getElementById('dataAge').style.color = "#555";
         }
 
         document.getElementById('autoState').innerText = parts[3] === '1' ? "有効（稼働中）" : "無効（停止中）";
