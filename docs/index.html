@@ -97,6 +97,15 @@
 </div>
 
 <script>
+let isSettingsDirty = false;
+
+// 画面内の入力枠やリストが変更されたら「編集中」フラグを立てる
+document.addEventListener('input', (e) => {
+    if (e.target.tagName === 'INPUT') isSettingsDirty = true;
+});
+document.addEventListener('change', (e) => {
+    if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') isSettingsDirty = true;
+});
 // ==========================================
 // 1. UIオプションの動的生成（handleRoot互換）
 // ==========================================
@@ -262,7 +271,8 @@ function handleStatusUpdate(event) {
         document.getElementById('heaterState').innerText = states[parseInt(parts[4])] || "不明";
         
         // 入力中でない場合のみUI更新
-        if(document.activeElement.tagName !== "INPUT" && document.activeElement.tagName !== "SELECT"){
+        // 編集中（未保存）でない場合のみ、ESP32からのデータでUIを上書きする
+        if (!isSettingsDirty) {
              document.getElementById('setDur').value = parts[6];
              updateFromMin(parts[6]);
              document.getElementById('setOn').value = parseFloat(parts[7]).toFixed(1);
@@ -283,6 +293,8 @@ function saveSettings() {
     const offT = document.getElementById('setOff').value || 15.0;
     const ductT = document.getElementById('setDuct').value || 5.0;
     sendCommand(`S,${dur},${onT},${offT},${ductT}`);
+    // ★追加: 保存コマンドを送ったらフラグを解除し、同期を再開する
+    isSettingsDirty = false;
 }
 </script>
 </body>
