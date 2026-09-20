@@ -232,6 +232,7 @@ void onWrite(BLECharacteristic *pChar) {
             // ★まず「B,STOP」を個別に判定（先に判定することで誤動作を防ぐ）
             if (value == "B,STOP") {
                 startPattern(PATTERN_EMERGENCY);
+                triggerButton(BTN_OFF);
                 Serial.println("緊急停止コマンド受信");
             } 
             else {
