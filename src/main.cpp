@@ -461,6 +461,43 @@ void handleAutoControl() {
     }
 }
 // ==============================================================
+// 6. スマホへ定期的にステータスを送信(Notify)する関数
+// ==============================================================
+unsigned long lastNotifyTime = 0;
+
+void handleBLENotify() {
+    // スマホとBLE接続されている場合のみ、2秒(2000ms)おきに送信
+    if (deviceConnected && (millis() - lastNotifyTime >= 2000)) {
+        lastNotifyTime = millis();
+        
+        // 最後にESP-NOWを受信してからの経過秒数
+        unsigned long dataAgeSeconds = (millis() - lastReceivedTime) / 1000;
+        
+        // 自動制御の残り時間を計算（秒）
+        int remainSec = 0;
+        if (autoModeActive) {
+            unsigned long elapsed = millis() - autoModeStartTime;
+            unsigned long total = autoModeMinutes * 60000UL;
+            if (total > elapsed) {
+                remainSec = (total - elapsed) / 1000;
+            }
+        }
+
+        // スマホ側が要求するフォーマットで文字列を組み立てる
+        char notifyMsg[128];
+        snprintf(notifyMsg, sizeof(notifyMsg), "R,%.1f,%.1f,%d,%d,%d,%d,%.1f,%.1f,%.1f,%lu", 
+                 currentRoomTemp, currentDuctTemp, 
+                 autoModeActive ? 1 : 0, 
+                 currentHeaterState, 
+                 remainSec, 
+                 autoModeMinutes, targetOnTemp, targetOffTemp, ductThreshTemp,
+                 dataAgeSeconds);
+                 
+        pStatusChar->setValue(notifyMsg);
+        pStatusChar->notify();
+    }
+}
+// ==============================================================
 // メインループ
 // ==============================================================
 void loop() {
@@ -475,7 +512,8 @@ void loop() {
 
     // 4. 自動制御モードの監視と実行
     handleAutoControl();
-
+    // ★この1行を追加（消えていたスマホへの送信処理を復活）
+    handleBLENotify();
     // 5. センサー通信途絶の監視（フェイルセーフ）
     checkFailSafe();
 }
