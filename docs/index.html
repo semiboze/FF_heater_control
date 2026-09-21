@@ -27,7 +27,6 @@
 
 <div class="card">
     <h3>現在のステータス</h3>
-    <!-- ★追加: 通信状態とポート番号の明記 -->
     <p>通信状態: <span id="espnowStatus" style="font-weight:bold; color:orange;">確認中...</span></p>
     <p>室内温度 (Port 13): <strong><span id="rTemp">--</span> ℃</strong></p>
     <p>ダクト温度 (Port 14): <strong><span id="dTemp">--</span> ℃</strong></p>
@@ -68,16 +67,16 @@
     
     <label>ONトリガー温度 (℃) [天井]:</label>
     <div class="input-group">
-        <input type="number" step="0.1" id="setOn" value="10.0">
-        <select id="selOn" onchange="if(this.value){document.getElementById('setOn').value=this.value;}; this.selectedIndex=0;">
+        <input type="number" step="0.1" id="setOn" value="10.0" oninput="validateTemperatures('on')">
+        <select id="selOn" onchange="if(this.value){document.getElementById('setOn').value=this.value; validateTemperatures('on');}; this.selectedIndex=0;">
             <option value="" disabled selected>選択...</option>
         </select>
     </div>
     
     <label>OFFトリガー温度 (℃) [天井]:</label>
     <div class="input-group">
-        <input type="number" step="0.1" id="setOff" value="15.0">
-        <select id="selOff" onchange="if(this.value){document.getElementById('setOff').value=this.value;}; this.selectedIndex=0;">
+        <input type="number" step="0.1" id="setOff" value="15.0" oninput="validateTemperatures('off')">
+        <select id="selOff" onchange="if(this.value){document.getElementById('setOff').value=this.value; validateTemperatures('off');}; this.selectedIndex=0;">
             <option value="" disabled selected>選択...</option>
         </select>
     </div>
@@ -101,7 +100,6 @@
 <script>
 let isSettingsDirty = false;
 
-// 画面内の入力枠やリストが変更されたら「編集中」フラグを立てる
 document.addEventListener('input', (e) => {
     if (e.target.tagName === 'INPUT') isSettingsDirty = true;
 });
@@ -109,9 +107,25 @@ document.addEventListener('change', (e) => {
     if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') isSettingsDirty = true;
 });
 
-// ==========================================
-// 1. UIオプションの動的生成
-// ==========================================
+// ★ON/OFF温度の自動連動補正ロジック
+function validateTemperatures(source) {
+    const onInput = document.getElementById('setOn');
+    const offInput = document.getElementById('setOff');
+    let onVal = parseFloat(onInput.value);
+    let offVal = parseFloat(offInput.value);
+    if (isNaN(onVal) || isNaN(offVal)) return;
+
+    if (source === 'on') {
+        if (onVal >= offVal) {
+            offInput.value = (onVal + 1.0).toFixed(1);
+        }
+    } else if (source === 'off') {
+        if (offVal <= onVal) {
+            onInput.value = (offVal - 1.0).toFixed(1);
+        }
+    }
+}
+
 window.onload = function() {
     const selDur = document.getElementById('selDur');
     for (let i = 1; i <= 12; i++) selDur.add(new Option(i + '時間', i * 60));
@@ -134,9 +148,6 @@ window.onload = function() {
     updateFromMin(document.getElementById('setDur').value);
 };
 
-// ==========================================
-// 2. 時刻・タイマー連動計算ロジック
-// ==========================================
 function updateFromMin(val) {
     let min = parseInt(val, 10);
     if (isNaN(min) || min <= 0) return;
@@ -157,7 +168,6 @@ function updateFromTime() {
     updateFromMin(diffMin);
 }
 
-// ★修正: コマンド衝突を防ぐための非同期制御 (await) を追加
 async function startAutoMode() {
     let min = parseInt(document.getElementById('setDur').value, 10);
     if (!isNaN(min) && min > 720) {
@@ -167,13 +177,10 @@ async function startAutoMode() {
             return;
         }
     }
-    await saveSettings(); // 保存完了を待つ
-    setTimeout(async () => { await sendCommand('A,1'); }, 500); // 余裕を持たせて開始コマンドを発行
+    await saveSettings();
+    setTimeout(async () => { await sendCommand('A,1'); }, 500); 
 }
 
-// ==========================================
-// 3. BLE 通信ロジック
-// ==========================================
 const SERVICE_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
 const CHAR_STATUS_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
 const CHAR_CMD_UUID = '8c772be5-e0d0-4251-bb5c-1f6874eb7310';
@@ -221,7 +228,6 @@ document.getElementById('connectBtn').addEventListener('click', async () => {
         
         document.getElementById('statusTxt').innerText = "接続完了 (通信中)";
         document.getElementById('statusTxt').style.color = "blue";
-        
         setControlsEnabled(true);
         
     } catch (e) {
@@ -240,13 +246,9 @@ function handleStatusUpdate(event) {
     
     if (parts[0] === 'R' && parts.length >= 10) {
         let dataAge = 0;
-        if (parts.length >= 11) {
-            dataAge = parseInt(parts[10]);
-        }
+        if (parts.length >= 11) dataAge = parseInt(parts[10]);
         
-        // ★追加・修正: ESP-NOW通信状態の可視化とエラー処理
         let statusEl = document.getElementById('espnowStatus');
-
         if (dataAge > 90) {
             if(statusEl) { statusEl.innerText = "途絶 (断線・エラー)"; statusEl.style.color = "red"; }
             document.getElementById('rTemp').innerText = "エラー";
@@ -269,7 +271,6 @@ function handleStatusUpdate(event) {
         const states = ["停止中(OFF)", "点火確認中", "運転中(ON)"];
         document.getElementById('heaterState').innerText = states[parseInt(parts[4])] || "不明";
         
-        // ★修正: 編集中でない場合のみUIを上書きする
         if (!isSettingsDirty) {
              document.getElementById('setDur').value = parts[6];
              updateFromMin(parts[6]);
@@ -285,40 +286,13 @@ async function sendCommand(cmd) {
     await cmdCharacteristic.writeValue(new TextEncoder().encode(cmd));
 }
 
-// ★修正: 保存後の同期ロックを数秒間維持し、巻き戻りバグを解消
 async function saveSettings() {
     const dur = document.getElementById('setDur').value || 60;
     const onT = document.getElementById('setOn').value || 10.0;
     const offT = document.getElementById('setOff').value || 15.0;
     const ductT = document.getElementById('setDuct').value || 5.0;
     await sendCommand(`S,${dur},${onT},${offT},${ductT}`);
-    
-    // 保存コマンド送信から2秒間は上書きをロックする
-    setTimeout(() => {
-        isSettingsDirty = false;
-    }, 2000);
-}
-// ★追加：ON/OFF温度の矛盾を防ぐ自動連動関数
-function validateTemperatures(source) {
-    const onInput = document.getElementById('setOn');
-    const offInput = document.getElementById('setOff');
-    
-    let onVal = parseFloat(onInput.value);
-    let offVal = parseFloat(offInput.value);
-    
-    if (isNaN(onVal) || isNaN(offVal)) return;
-
-    if (source === 'on') {
-        // ON温度を変更した際、OFF温度がON温度以下なら【ON温度 + 1℃】に補正
-        if (onVal >= offVal) {
-            offInput.value = (onVal + 1.0).toFixed(1);
-        }
-    } else if (source === 'off') {
-        // OFF温度を変更した際、ON温度がOFF温度以上なら【OFF温度 - 1℃】に補正
-        if (offVal <= onVal) {
-            onInput.value = (offVal - 1.0).toFixed(1);
-        }
-    }
+    setTimeout(() => { isSettingsDirty = false; }, 2000);
 }
 </script>
 </body>

@@ -1,16 +1,14 @@
 #include <Arduino.h>
 #include <esp_now.h>
 #include <WiFi.h>
-#include <esp_wifi.h> // ★この1行を追加
+#include <esp_wifi.h> // ESP-NOW安定化用
 #include <Preferences.h>
-// DHT等のライブラリは不要になりますが、コンパイルエラー回避のため残す場合は適宜修正してください
-
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
 
-// ==================== データ構造 (センサー側と一致させる) ====================
+// ==================== データ構造 ====================
 typedef struct {
     uint8_t version;
     float roomTemp;
@@ -21,36 +19,32 @@ typedef struct {
 } SensorData;
 
 SensorData receivedData;
-unsigned long lastReceivedTime = 0; // 通信監視用
-const unsigned long TIMEOUT_THRESHOLD = 15000; // 15秒届かなければ異常検知
+unsigned long lastReceivedTime = 0; 
+const unsigned long TIMEOUT_THRESHOLD = 15000; 
 
 // ==================== BLE UUID設定 ====================
 #define SERVICE_UUID           "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
-#define CHAR_STATUS_UUID       "beb5483e-36e1-4688-b7f5-ea07361b26a8" // Notify用 (状態送信)
-#define CHAR_CMD_UUID          "8c772be5-e0d0-4251-bb5c-1f6874eb7310" // Write用 (コマンド受信)
+#define CHAR_STATUS_UUID       "beb5483e-36e1-4688-b7f5-ea07361b26a8" 
+#define CHAR_CMD_UUID          "8c772be5-e0d0-4251-bb5c-1f6874eb7310" 
 
 BLEServer* pServer = NULL;
 BLECharacteristic* pStatusChar = NULL;
 bool deviceConnected = false;
-// ==================== 1. グローバル変数の追加 ====================
-bool oldDeviceConnected = false; // ★追加：状態遷移監視用
+bool oldDeviceConnected = false; 
 
 // ==================== ピン・ボタン定義 ====================
 #ifdef TARGET_ESP32_S3
-  // ESP32-S3用のピン定義
-  #define PIN_ON    1   // 例: S3で使えるピンに変更
+  #define PIN_ON    1   
   #define PIN_OFF   2
   #define PIN_UP    3
   #define PIN_DOWN  4
 #else
-  // 元のESP32用のピン定義
   #define PIN_ON    25
   #define PIN_OFF   32
   #define PIN_UP    26
   #define PIN_DOWN  27
 #endif
 
-// ==================== ピン・ボタン定義 ====================
 enum ButtonType { BTN_ON, BTN_OFF, BTN_UP, BTN_DOWN };
 
 struct ButtonPulse {
@@ -62,7 +56,6 @@ struct ButtonPulse {
     unsigned long nextPressTime;
 };
 
-// 初期化時に上記のマクロ判定ピンを配列に渡す
 ButtonPulse buttons[] = {
     {PIN_ON,   "電源ON",   0, false, 0, 0},
     {PIN_OFF,  "電源OFF",  0, false, 0, 0},
@@ -71,11 +64,6 @@ ButtonPulse buttons[] = {
 };
 
 const int BUTTON_COUNT = sizeof(buttons) / sizeof(ButtonPulse);
-
-// const int PIN_DHT_ROOM = 13; 
-// const int PIN_DHT_DUCT = 14; 
-// DHT dhtRoom(PIN_DHT_ROOM, DHT11);
-// DHT dhtDuct(PIN_DHT_DUCT, DHT11);
 
 // ==================== グローバル制御変数 ====================
 Preferences prefs;
@@ -97,81 +85,52 @@ const unsigned long IGNITION_TIMEOUT_MS = 300000;
 float currentRoomTemp = 0.0;
 float currentDuctTemp = 0.0;
 
-// ==================== LED点滅パターン定義 ====================
-// 点滅間隔(ms)
-// #define BLINK_INTERVAL_MS 200
-
-// ==================== LED制御用変数 ====================
+// ==================== LED制御 ====================
 const int PIN_LED = 2;
 
-// --- LEDパターン管理 ---
-struct LedPattern {
-    const char* sequence;
-};
+struct LedPattern { const char* sequence; };
 
 enum LedPatternType {
-    PATTERN_ON,
-    PATTERN_OFF,
-    PATTERN_UP,
-    PATTERN_DOWN,
-    PATTERN_AUTO,
-    PATTERN_SETTING,
-    PATTERN_BLE_CONN,
-    PATTERN_EMERGENCY,
-    PATTERN_BLE_DISCONN, // 追加したいパターンもここに追加可能
-    PATTERN_COUNT        // パターンの総数を自動取得
-};
-// 8つのパターンを定義（ここを書き換えればいつでも変更可能）
-const LedPattern patterns[] = {
-    {"o-o"},         // PATTERN_ON
-    {"OO"},       // PATTERN_OFF
-    {"o-o"},     // PATTERN_UP
-    {"O-o-O"},     // PATTERN_DOWN
-    {"O-O-O"},       // PATTERN_AUTO
-    {"o-O-o-O"},     // PATTERN_SETTING
-    {"O-O"},       // PATTERN_BLE_CONN
-    {"o-o-o-O-O-O-o-o-o--o-o-o-O-O-O-o-o-o"},     // PATTERN_EMERGENCY
-    {"o-o-o-o-O"}    // PATTERN_BLE_DISCONN (追加分)
+    PATTERN_ON, PATTERN_OFF, PATTERN_UP, PATTERN_DOWN,
+    PATTERN_AUTO, PATTERN_SETTING, PATTERN_BLE_CONN,
+    PATTERN_EMERGENCY, PATTERN_BLE_DISCONN, PATTERN_COUNT
 };
 
-// 状態管理変数
+const LedPattern patterns[] = {
+    {"o-o"},         // PATTERN_ON
+    {"OO"},          // PATTERN_OFF
+    {"o-o"},         // PATTERN_UP
+    {"O-o-O"},       // PATTERN_DOWN
+    {"O-O-O"},       // PATTERN_AUTO
+    {"o-O-o-O"},     // PATTERN_SETTING
+    {"O-O"},         // PATTERN_BLE_CONN
+    {"o-o-o-O-O-O-o-o-o--o-o-o-O-O-O-o-o-o"}, // PATTERN_EMERGENCY
+    {"o-o-o-o-O"}    // PATTERN_BLE_DISCONN
+};
+
 int currentStep = 0;
 const char* activeSequence = "";
 unsigned long lastChangeTime = 0;
 bool isPatternRunning = false;
-const int LED_PIN = 2; // お使いのボードのLEDピン番号に合わせてください
 
-// ==================== ESP-NOW 受信コールバック ====================
+// ==================== 関数定義 ====================
 void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
-    Serial.println("ESP-NOWを受信しました！"); // ←これが出るか確認
-    
-    // データの中身を直接表示してみる
-    SensorData temp;
-    memcpy(&temp, incomingData, sizeof(temp));
-    Serial.printf("受信した温度: %.1f\n", temp.roomTemp);
-    
     memcpy((void*)&receivedData, incomingData, sizeof(receivedData));
     currentRoomTemp = receivedData.roomTemp;
     currentDuctTemp = receivedData.ductTemp;
     lastReceivedTime = millis();
 }
-// 引数の型を int ではなく LedPatternType に変更
+
 void startPattern(LedPatternType patternType) {
-    // 範囲外チェック（安全対策）
     if (patternType < 0 || patternType >= PATTERN_COUNT) return;
-    
     activeSequence = patterns[patternType].sequence;
     currentStep = 0;
     isPatternRunning = true;
     lastChangeTime = 0;
 }
 
-// ==================== 3. ボタン処理関数の修正 ====================
-// 信号を1回に統一し、パルス幅を短く（200ms）します
 void triggerButton(ButtonType btnType) {
     if (buttons[btnType].pressCount > 0) return;
-    
-    // ★すべてのボタンを1回送信に統一
     buttons[btnType].pressCount = 1;
     buttons[btnType].nextPressTime = millis(); 
     
@@ -194,15 +153,33 @@ void updateButtonPulses() {
         if (!buttons[i].isPinHigh && buttons[i].pressCount > 0 && currentMillis >= buttons[i].nextPressTime) {
             digitalWrite(buttons[i].pin, HIGH);
             buttons[i].isPinHigh = true;
-            // ★500msだと「連続押し」判定されるため、200msに変更
-            buttons[i].turnOffTime = currentMillis + 200; 
+            buttons[i].turnOffTime = currentMillis + 200; // すべて200ms
             buttons[i].pressCount--;                      
         }
     }
 }
 
-// ==================== 2. BLEコールバック処理の修正 ====================
-// delayを排除し、状態のフラグ変更のみに留めます
+void updateLedPattern() {
+    if (!isPatternRunning) return;
+    unsigned long now = millis();
+    char cmd = activeSequence[currentStep];
+
+    if (cmd == '\0') {
+        digitalWrite(PIN_LED, LOW);
+        isPatternRunning = false;
+        return;
+    }
+
+    unsigned long duration = (cmd == 'O') ? 600 : 200;
+    if (now - lastChangeTime >= duration) {
+        lastChangeTime = now;
+        digitalWrite(PIN_LED, LOW);
+        if (cmd == 'O' || cmd == 'o') { digitalWrite(PIN_LED, HIGH); }
+        currentStep++;
+    }
+}
+
+// ==================== BLE クラス ====================
 class MyServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
         deviceConnected = true;
@@ -213,7 +190,6 @@ class MyServerCallbacks: public BLEServerCallbacks {
         deviceConnected = false;
         startPattern(PATTERN_BLE_DISCONN); 
         Serial.println("BLE: 切断検知。");
-        // ★ここにあった delay(500) と pServer->getAdvertising()->start() を削除
     }
 };
 
@@ -221,27 +197,20 @@ class MyCallbacks: public BLECharacteristicCallbacks {
 void onWrite(BLECharacteristic *pChar) {
         String value = pChar->getValue().c_str();
         if (value.length() == 0) return;
-
         Serial.print("BLE受信: "); Serial.println(value);
 
-        // 1. 受信確認(ACK)をスマホへ即座に送信
         pStatusChar->setValue(("ACK," + value.substring(2)).c_str());
         pStatusChar->notify();
 
-        // 2. パターン分岐とLED点滅、機能実行
         if (value.startsWith("B,")) {
-            // ★まず「B,STOP」を個別に判定（先に判定することで誤動作を防ぐ）
             if (value == "B,STOP") {
                 startPattern(PATTERN_EMERGENCY);
                 triggerButton(BTN_OFF);
                 Serial.println("緊急停止コマンド受信");
-            } 
-            else {
-                // 通常のボタン操作
+            } else {
                 int btnIdx = value.substring(2).toInt();
                 if (btnIdx >= 0 && btnIdx < BUTTON_COUNT) {
                     triggerButton((ButtonType)btnIdx);
-                    // ボタン操作に対応するパターン（0:ON, 1:OFF, 2:UP, 3:DOWN）
                     startPattern((LedPatternType)btnIdx);
                 }
             }
@@ -249,9 +218,10 @@ void onWrite(BLECharacteristic *pChar) {
         else if (value.startsWith("A,")) {
             int mode = value.substring(2).toInt();
             if (mode == 1) {
+                // ★修正: 稼働中の再開時はリセットせず状態を維持する
+                if (!autoModeActive) { currentHeaterState = HEATER_OFF; }
                 autoModeActive = true;
                 autoModeStartTime = millis();
-                currentHeaterState = HEATER_OFF;
                 startPattern(PATTERN_AUTO);
             } else {
                 autoModeActive = false;
@@ -263,12 +233,17 @@ void onWrite(BLECharacteristic *pChar) {
             }
         }
         else if (value.startsWith("S,")) {
-            int dur; float onT, offT, ductT;
-            if (sscanf(value.c_str(), "S,%d,%f,%f,%f", &dur, &onT, &offT, &ductT) == 4) {
-                autoModeMinutes = dur;
-                targetOnTemp = onT;
-                targetOffTemp = offT;
-                ductThreshTemp = ductT;
+            // ★修正: sscanfのバグを回避して確実に文字列を分割・保存する
+            int c1 = value.indexOf(',');
+            int c2 = value.indexOf(',', c1 + 1);
+            int c3 = value.indexOf(',', c2 + 1);
+            int c4 = value.indexOf(',', c3 + 1);
+
+            if (c1 > 0 && c2 > 0 && c3 > 0 && c4 > 0) {
+                autoModeMinutes = value.substring(c1 + 1, c2).toInt();
+                targetOnTemp = value.substring(c2 + 1, c3).toFloat();
+                targetOffTemp = value.substring(c3 + 1, c4).toFloat();
+                ductThreshTemp = value.substring(c4 + 1).toFloat();
                 
                 prefs.putInt("duration", autoModeMinutes);
                 prefs.putFloat("ontemp", targetOnTemp);
@@ -281,69 +256,33 @@ void onWrite(BLECharacteristic *pChar) {
         }
     }
 };
-void updateLedPattern() {
-    if (!isPatternRunning) return;
 
-    unsigned long now = millis();
-    char cmd = activeSequence[currentStep];
-
-    if (cmd == '\0') {
-        digitalWrite(LED_PIN, LOW);
-        isPatternRunning = false;
-        return;
-    }
-
-    // Oは600ms, oは200ms, -は200ms
-    unsigned long duration = (cmd == 'O') ? 600 : 200;
-    
-    if (now - lastChangeTime >= duration) {
-        lastChangeTime = now;
-        
-        // ★ステップ切り替わり時に必ず一度LEDを消す（これが重要！）
-        digitalWrite(LED_PIN, LOW);
-        
-        // 点灯指示(O,o)の場合のみ、LEDをONにする
-        if (cmd == 'O' || cmd == 'o') {
-            digitalWrite(LED_PIN, HIGH);
-        }
-        
-        currentStep++;
-    }
-}
-// ==================== 初期設定 ====================
+// ==================== setup ====================
 void setup() {
     Serial.begin(115200);
 
-    // WiFiをSTAモードにしてESP-NOW初期化
+    // ★修正: ESP-NOW安定化のためチャネルを1に固定
     WiFi.mode(WIFI_STA);
-    WiFi.disconnect(); // 余計なルーター検索やスキャンを停止して安定させる
-    // 送信側センサーのチャネル（ここでは 1）に固定する
-    esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
-    if (esp_now_init() != ESP_OK) {
-        Serial.println("Error initializing ESP-NOW");
-    }
-    // 受信側（main_control.cpp）の setup() 内に追加
+    WiFi.disconnect();
+    esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE); 
+
+    if (esp_now_init() != ESP_OK) { Serial.println("Error ESP-NOW"); }
+    
     esp_now_peer_info_t peerInfo = {};
     uint8_t senderMac[] = {0xEC, 0x61, 0x60, 0x93, 0xf8, 0x14};
     memcpy(peerInfo.peer_addr, senderMac, 6);
     peerInfo.channel = 1;
     peerInfo.encrypt = false;
-
-    if (esp_now_add_peer(&peerInfo) != ESP_OK) {
-        Serial.println("Failed to add sender peer");
-    }
+    if (esp_now_add_peer(&peerInfo) != ESP_OK) { Serial.println("Failed peer"); }
 
     esp_now_register_recv_cb(OnDataRecv);
-    pinMode(LED_PIN, OUTPUT);
-    digitalWrite(LED_PIN, LOW); // 初期状態は消灯
-
+    
+    pinMode(PIN_LED, OUTPUT);
+    digitalWrite(PIN_LED, LOW);
     for (int i = 0; i < BUTTON_COUNT; i++) {
         pinMode(buttons[i].pin, OUTPUT);
         digitalWrite(buttons[i].pin, LOW);
     }
-    
-    // dhtRoom.begin();
-    // dhtDuct.begin();
     
     prefs.begin("heater-config", false);
     autoModeMinutes = prefs.getInt("duration", 60);
@@ -351,23 +290,14 @@ void setup() {
     targetOffTemp = prefs.getFloat("offtemp", 15.0);
     ductThreshTemp = prefs.getFloat("ductthresh", 5.0);
     
-    // BLE初期化
     BLEDevice::init("FF_Heater");
     pServer = BLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallbacks());
 
     BLEService *pService = pServer->createService(SERVICE_UUID);
-
-    pStatusChar = pService->createCharacteristic(
-                    CHAR_STATUS_UUID,
-                    BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY
-                  );
+    pStatusChar = pService->createCharacteristic(CHAR_STATUS_UUID, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
     pStatusChar->addDescriptor(new BLE2902());
-
-    BLECharacteristic *pCmdChar = pService->createCharacteristic(
-                                    CHAR_CMD_UUID,
-                                    BLECharacteristic::PROPERTY_WRITE
-                                  );
+    BLECharacteristic *pCmdChar = pService->createCharacteristic(CHAR_CMD_UUID, BLECharacteristic::PROPERTY_WRITE);
     pCmdChar->setCallbacks(new MyCallbacks());
 
     pService->start();
@@ -376,16 +306,14 @@ void setup() {
     pAdvertising->setScanResponse(true);
     BLEDevice::startAdvertising();
     
-    Serial.println("BLE Ready: スマホからの接続待機中...");
+    Serial.println("BLE Ready: 待機中...");
 }
-// ==============================================================
-// 1. BLEの接続/切断状態を管理する関数
-// ==============================================================
+
+// ==================== 独立処理モジュール ====================
 void handleBLEConnection() {
     if (!deviceConnected && oldDeviceConnected) {
         delay(500); 
         pServer->getAdvertising()->start();
-        Serial.println("BLE: アドバタイズ再開");
         oldDeviceConnected = deviceConnected;
     }
     if (deviceConnected && !oldDeviceConnected) {
@@ -393,127 +321,89 @@ void handleBLEConnection() {
     }
 }
 
-// ==============================================================
-// 2. センサー通信途絶時のフェイルセーフ（安全装置）を管理する関数
-// ==============================================================
-void checkFailSafe() {
-    // センサー側(ESP-NOW)からの通信が一定時間(TIMEOUT_THRESHOLD)ない場合の処理
-    if (millis() - lastReceivedTime > TIMEOUT_THRESHOLD) {
-        // ここには既存のフェイルセーフ処理（ヒーター強制停止など）を記述します
-        // （元々 loop() の下部にあったフェイルセーフの中身をここに移動させます）
-    }
-}
-
-// ==============================================================
-// 3. 自動制御モードのメインロジックを管理する関数
-// ==============================================================
 void handleAutoControl() {
-    if (!autoModeActive) return; // 自動制御が無効ならここで処理を抜ける
+    if (!autoModeActive) return;
 
     unsigned long currentMillis = millis();
-
-    // 3-1. タイマー終了判定（指定時間を過ぎたら自動制御を終了してヒーターOFF）
     if (currentMillis - autoModeStartTime >= (autoModeMinutes * 60000UL)) {
         autoModeActive = false;
         if (currentHeaterState != HEATER_OFF) {
             triggerButton(BTN_OFF); 
             currentHeaterState = HEATER_OFF;
         }
-        Serial.println("自動制御：タイマー満了につき終了しました。");
         return;
     } 
 
-    // 3-2. ヒーター状態に応じた温度監視とステートマシン
     switch (currentHeaterState) {
         case HEATER_OFF:
-            // 室温がONトリガー温度以下になったら点火操作
             if (currentRoomTemp <= targetOnTemp) {
                 triggerButton(BTN_ON);
                 currentHeaterState = HEATER_IGNITING;
                 ignitionStartTime = currentMillis;
                 ignitionStartDuctTemp = currentDuctTemp;
-                Serial.println("自動制御：ON条件を満たしました。点火操作を実行します。");
             }
             break;
 
         case HEATER_IGNITING:
-            // 点火操作後、一定時間待機してダクト温度を確認
             if (currentMillis - ignitionStartTime >= IGNITION_TIMEOUT_MS) {
                 if (currentDuctTemp >= (ignitionStartDuctTemp + ductThreshTemp)) {
                     currentHeaterState = HEATER_ON;
-                    Serial.println("自動制御：点火成功を確認しました。運転状態へ移行。");
                 } else {
                     triggerButton(BTN_ON);
                     ignitionStartTime = currentMillis; 
-                    Serial.println("自動制御：点火失敗の疑い。リトライ操作を実行します。");
                 }
             }
             break;
 
         case HEATER_ON:
-            // 室温がOFFトリガー温度以上になったら消火操作
             if (currentRoomTemp >= targetOffTemp) {
                 triggerButton(BTN_OFF);
                 currentHeaterState = HEATER_OFF;
-                Serial.println("自動制御：OFF条件を満たしました。消火操作を実行します。");
             }
             break;
     }
 }
-// ==============================================================
-// 6. スマホへ定期的にステータスを送信(Notify)する関数
-// ==============================================================
-unsigned long lastNotifyTime = 0;
 
+unsigned long lastNotifyTime = 0;
 void handleBLENotify() {
-    // スマホとBLE接続されている場合のみ、2秒(2000ms)おきに送信
     if (deviceConnected && (millis() - lastNotifyTime >= 2000)) {
         lastNotifyTime = millis();
-        
-        // 最後にESP-NOWを受信してからの経過秒数
         unsigned long dataAgeSeconds = (millis() - lastReceivedTime) / 1000;
         
-        // 自動制御の残り時間を計算（秒）
         int remainSec = 0;
         if (autoModeActive) {
             unsigned long elapsed = millis() - autoModeStartTime;
             unsigned long total = autoModeMinutes * 60000UL;
-            if (total > elapsed) {
-                remainSec = (total - elapsed) / 1000;
-            }
+            if (total > elapsed) remainSec = (total - elapsed) / 1000;
         }
 
-        // スマホ側が要求するフォーマットで文字列を組み立てる
         char notifyMsg[128];
         snprintf(notifyMsg, sizeof(notifyMsg), "R,%.1f,%.1f,%d,%d,%d,%d,%.1f,%.1f,%.1f,%lu", 
-                 currentRoomTemp, currentDuctTemp, 
-                 autoModeActive ? 1 : 0, 
-                 currentHeaterState, 
-                 remainSec, 
-                 autoModeMinutes, targetOnTemp, targetOffTemp, ductThreshTemp,
-                 dataAgeSeconds);
+                 currentRoomTemp, currentDuctTemp, autoModeActive ? 1 : 0, 
+                 currentHeaterState, remainSec, autoModeMinutes, 
+                 targetOnTemp, targetOffTemp, ductThreshTemp, dataAgeSeconds);
                  
         pStatusChar->setValue(notifyMsg);
         pStatusChar->notify();
     }
 }
-// ==============================================================
-// メインループ
-// ==============================================================
+
+void checkFailSafe() {
+    if (millis() - lastReceivedTime > TIMEOUT_THRESHOLD) {
+        if (currentHeaterState != HEATER_OFF) {
+            triggerButton(BTN_OFF);
+            currentHeaterState = HEATER_OFF;
+            autoModeActive = false;
+        }
+    }
+}
+
+// ==================== メインループ ====================
 void loop() {
-    // 1. LEDの非同期アニメーション更新
     updateLedPattern();
-
-    // 2. ボタンの非同期パルス制御更新
     updateButtonPulses(); 
-
-    // 3. BLE接続状態の監視とアドバタイズ復帰
     handleBLEConnection();
-
-    // 4. 自動制御モードの監視と実行
     handleAutoControl();
-    // ★この1行を追加（消えていたスマホへの送信処理を復活）
-    handleBLENotify();
-    // 5. センサー通信途絶の監視（フェイルセーフ）
+    handleBLENotify(); 
     checkFailSafe();
 }
