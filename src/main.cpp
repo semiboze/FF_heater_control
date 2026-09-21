@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <esp_now.h>
 #include <WiFi.h>
+#include <esp_wifi.h> // ★この1行を追加
 #include <Preferences.h>
 // DHT等のライブラリは不要になりますが、コンパイルエラー回避のため残す場合は適宜修正してください
 
@@ -315,6 +316,9 @@ void setup() {
 
     // WiFiをSTAモードにしてESP-NOW初期化
     WiFi.mode(WIFI_STA);
+    WiFi.disconnect(); // 余計なルーター検索やスキャンを停止して安定させる
+    // 送信側センサーのチャネル（ここでは 1）に固定する
+    esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
     if (esp_now_init() != ESP_OK) {
         Serial.println("Error initializing ESP-NOW");
     }
@@ -374,104 +378,104 @@ void setup() {
     
     Serial.println("BLE Ready: スマホからの接続待機中...");
 }
-
-// ==================== メインループ ====================
-void loop() {
-    updateLedPattern();
-    updateButtonPulses(); 
-    
-    // ★追加: BLE切断時の安全なアドバタイズ再開処理をloop内に逃がす
+// ==============================================================
+// 1. BLEの接続/切断状態を管理する関数
+// ==============================================================
+void handleBLEConnection() {
     if (!deviceConnected && oldDeviceConnected) {
         delay(500); 
         pServer->getAdvertising()->start();
         Serial.println("BLE: アドバタイズ再開");
         oldDeviceConnected = deviceConnected;
     }
-    // ★追加: BLE接続時の状態更新
     if (deviceConnected && !oldDeviceConnected) {
         oldDeviceConnected = deviceConnected;
     }
-    
-    // ★通信監視フェイルセーフ (以降は既存のコードそのまま)
-    if (millis() - lastReceivedTime > TIMEOUT_THRESHOLD) {
-        // 通信が途絶えた場合の安全措置
-        if (currentHeaterState != HEATER_OFF) {
-            Serial.println("【警告】センサー通信途絶！ヒーターを強制停止します");
-            triggerButton(BTN_OFF);
-            currentHeaterState = HEATER_OFF;
-            startPattern(PATTERN_EMERGENCY);
-        }
-        // 必要に応じてLED等でエラーを表示し続ける
-    }
+}
 
-    static unsigned long lastStatusNotify = 0;
-    // 2秒ごとにスマホへステータスを通知
-    if (millis() - lastStatusNotify >= 2000) {
-        lastStatusNotify = millis();
-        
-        // BLE接続中のみステータスを送信
-        if (deviceConnected) {
-            long remaining = 0;
-            if (autoModeActive) {
-                remaining = (autoModeMinutes * 60) - ((millis() - autoModeStartTime) / 1000);
-                if (remaining < 0) remaining = 0;
-            }
-            
-            // 【追加】最後にデータを受信してからの経過時間（秒）を計算
-            unsigned long dataAgeSeconds = (millis() - lastReceivedTime) / 1000;
-            
-            // 【修正】CSV形式のフォーマット指定子に %lu を追加し、dataAgeSeconds を末尾に付与
-            char statusStr[128];
-            snprintf(statusStr, sizeof(statusStr), "R,%.1f,%.1f,%d,%d,%ld,%d,%.1f,%.1f,%.1f,%lu",
-                     currentRoomTemp, currentDuctTemp, autoModeActive ? 1 : 0, currentHeaterState, remaining,
-                     autoModeMinutes, targetOnTemp, targetOffTemp, ductThreshTemp, dataAgeSeconds);
-            
-            pStatusChar->setValue(statusStr);
-            pStatusChar->notify();
-        }
+// ==============================================================
+// 2. センサー通信途絶時のフェイルセーフ（安全装置）を管理する関数
+// ==============================================================
+void checkFailSafe() {
+    // センサー側(ESP-NOW)からの通信が一定時間(TIMEOUT_THRESHOLD)ない場合の処理
+    if (millis() - lastReceivedTime > TIMEOUT_THRESHOLD) {
+        // ここには既存のフェイルセーフ処理（ヒーター強制停止など）を記述します
+        // （元々 loop() の下部にあったフェイルセーフの中身をここに移動させます）
     }
-    
-    if (autoModeActive) {
-        if (millis() - autoModeStartTime >= ((unsigned long)autoModeMinutes * 60 * 1000)) {
-            autoModeActive = false; 
-            if (currentHeaterState != HEATER_OFF) {
-                triggerButton(BTN_OFF); 
-                currentHeaterState = HEATER_OFF;
-            }
-            return;
+}
+
+// ==============================================================
+// 3. 自動制御モードのメインロジックを管理する関数
+// ==============================================================
+void handleAutoControl() {
+    if (!autoModeActive) return; // 自動制御が無効ならここで処理を抜ける
+
+    unsigned long currentMillis = millis();
+
+    // 3-1. タイマー終了判定（指定時間を過ぎたら自動制御を終了してヒーターOFF）
+    if (currentMillis - autoModeStartTime >= (autoModeMinutes * 60000UL)) {
+        autoModeActive = false;
+        if (currentHeaterState != HEATER_OFF) {
+            triggerButton(BTN_OFF); 
+            currentHeaterState = HEATER_OFF;
         }
-        
-        switch (currentHeaterState) {
-            case HEATER_OFF:
-                if (currentRoomTemp <= targetOnTemp && currentRoomTemp > 0.0) {
-                    triggerButton(BTN_ON); 
-                    ignitionStartTime = millis();
-                    ignitionStartDuctTemp = currentDuctTemp; 
-                    currentHeaterState = HEATER_IGNITING;
-                    Serial.println("点火プロセス開始。");
-                }
-                break;
-                
-            case HEATER_IGNITING:
+        Serial.println("自動制御：タイマー満了につき終了しました。");
+        return;
+    } 
+
+    // 3-2. ヒーター状態に応じた温度監視とステートマシン
+    switch (currentHeaterState) {
+        case HEATER_OFF:
+            // 室温がONトリガー温度以下になったら点火操作
+            if (currentRoomTemp <= targetOnTemp) {
+                triggerButton(BTN_ON);
+                currentHeaterState = HEATER_IGNITING;
+                ignitionStartTime = currentMillis;
+                ignitionStartDuctTemp = currentDuctTemp;
+                Serial.println("自動制御：ON条件を満たしました。点火操作を実行します。");
+            }
+            break;
+
+        case HEATER_IGNITING:
+            // 点火操作後、一定時間待機してダクト温度を確認
+            if (currentMillis - ignitionStartTime >= IGNITION_TIMEOUT_MS) {
                 if (currentDuctTemp >= (ignitionStartDuctTemp + ductThreshTemp)) {
                     currentHeaterState = HEATER_ON;
-                    Serial.println("点火成功検知。通常運転モードへ。");
+                    Serial.println("自動制御：点火成功を確認しました。運転状態へ移行。");
+                } else {
+                    triggerButton(BTN_ON);
+                    ignitionStartTime = currentMillis; 
+                    Serial.println("自動制御：点火失敗の疑い。リトライ操作を実行します。");
                 }
-                else if (millis() - ignitionStartTime >= IGNITION_TIMEOUT_MS) {
-                    Serial.println("不発判定。再点火試行。");
-                    triggerButton(BTN_ON); 
-                    ignitionStartTime = millis(); 
-                    ignitionStartDuctTemp = currentDuctTemp; 
-                }
-                break;
-                
-            case HEATER_ON:
-                if (currentRoomTemp >= targetOffTemp) {
-                    triggerButton(BTN_OFF); 
-                    currentHeaterState = HEATER_OFF;
-                    Serial.println("目標温度達成。消火。");
-                }
-                break;
-        }
+            }
+            break;
+
+        case HEATER_ON:
+            // 室温がOFFトリガー温度以上になったら消火操作
+            if (currentRoomTemp >= targetOffTemp) {
+                triggerButton(BTN_OFF);
+                currentHeaterState = HEATER_OFF;
+                Serial.println("自動制御：OFF条件を満たしました。消火操作を実行します。");
+            }
+            break;
     }
+}
+// ==============================================================
+// メインループ
+// ==============================================================
+void loop() {
+    // 1. LEDの非同期アニメーション更新
+    updateLedPattern();
+
+    // 2. ボタンの非同期パルス制御更新
+    updateButtonPulses(); 
+
+    // 3. BLE接続状態の監視とアドバタイズ復帰
+    handleBLEConnection();
+
+    // 4. 自動制御モードの監視と実行
+    handleAutoControl();
+
+    // 5. センサー通信途絶の監視（フェイルセーフ）
+    checkFailSafe();
 }

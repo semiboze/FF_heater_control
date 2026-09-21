@@ -27,8 +27,10 @@
 
 <div class="card">
     <h3>現在のステータス</h3>
-    <p>室内温度: <strong><span id="rTemp">--</span> ℃</strong></p>
-    <p>ダクト温度: <strong><span id="dTemp">--</span> ℃</strong></p>
+    <!-- ★追加: 通信状態とポート番号の明記 -->
+    <p>通信状態: <span id="espnowStatus" style="font-weight:bold; color:orange;">確認中...</span></p>
+    <p>室内温度 (Port 13): <strong><span id="rTemp">--</span> ℃</strong></p>
+    <p>ダクト温度 (Port 14): <strong><span id="dTemp">--</span> ℃</strong></p>
     <p style="font-size: 0.9em; color: #555;">センサー最終更新: <strong><span id="dataAge">--</span> 秒前</strong></p>
     <p>自動制御モード: <strong><span id="autoState">無効（停止中）</span></strong></p>
     <p>残り時間: <strong><span id="remainTime">--</span></strong></p>
@@ -38,12 +40,12 @@
 <div class="card">
     <h3>手動リモコン操作</h3>
     <div class="flex" style="margin-bottom: 10px;">
-        <button class="btn" onclick="sendCommand('B,0', this)">電源ON</button>
-        <button class="btn btn-danger" onclick="sendCommand('B,1', this)">電源OFF</button>
+        <button class="btn" onclick="sendCommand('B,0')">電源ON</button>
+        <button class="btn btn-danger" onclick="sendCommand('B,1')">電源OFF</button>
     </div>
     <div class="flex">
-        <button class="btn" onclick="sendCommand('B,2', this)">温度上げ</button>
-        <button class="btn" onclick="sendCommand('B,3', this)">温度DOWN</button>
+        <button class="btn" onclick="sendCommand('B,2')">温度上げ</button>
+        <button class="btn" onclick="sendCommand('B,3')">温度DOWN</button>
     </div>
 </div>
 
@@ -55,7 +57,7 @@
         <input type="number" id="setDur" value="60" oninput="updateFromMin(this.value)"> 分
         <select id="selDur" onchange="if(this.value){document.getElementById('setDur').value=this.value; updateFromMin(this.value);}; this.selectedIndex=0;">
             <option value="" disabled selected>選択...</option>
-            </select>
+        </select>
     </div>
     
     <label>終了時刻指定:</label>
@@ -69,7 +71,7 @@
         <input type="number" step="0.1" id="setOn" value="10.0">
         <select id="selOn" onchange="if(this.value){document.getElementById('setOn').value=this.value;}; this.selectedIndex=0;">
             <option value="" disabled selected>選択...</option>
-            </select>
+        </select>
     </div>
     
     <label>OFFトリガー温度 (℃) [天井]:</label>
@@ -77,7 +79,7 @@
         <input type="number" step="0.1" id="setOff" value="15.0">
         <select id="selOff" onchange="if(this.value){document.getElementById('setOff').value=this.value;}; this.selectedIndex=0;">
             <option value="" disabled selected>選択...</option>
-            </select>
+        </select>
     </div>
     
     <label>点火判定温度上昇値 (℃) [ダクト]:</label>
@@ -85,7 +87,7 @@
         <input type="number" step="0.1" id="setDuct" value="5.0">
         <select id="selDuct" onchange="if(this.value){document.getElementById('setDuct').value=this.value;}; this.selectedIndex=0;">
             <option value="" disabled selected>選択...</option>
-            </select>
+        </select>
     </div>
     
     <button class="btn" onclick="saveSettings()" style="margin-top:20px; background:#6c757d; box-shadow:0 4px #5a6268;">設定をESP32へ保存</button>
@@ -106,21 +108,19 @@ document.addEventListener('input', (e) => {
 document.addEventListener('change', (e) => {
     if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') isSettingsDirty = true;
 });
+
 // ==========================================
-// 1. UIオプションの動的生成（handleRoot互換）
+// 1. UIオプションの動的生成
 // ==========================================
 window.onload = function() {
-    // タイマー（1時間～12時間）
     const selDur = document.getElementById('selDur');
     for (let i = 1; i <= 12; i++) selDur.add(new Option(i + '時間', i * 60));
     
-    // 時刻（0～23時、0～59分）
     const tHour = document.getElementById('target_hour');
     for (let i = 0; i < 24; i++) tHour.add(new Option(i + '時', i));
     const tMin = document.getElementById('target_min');
     for (let i = 0; i < 60; i++) tMin.add(new Option((i < 10 ? '0' : '') + i + '分', i));
     
-    // 温度（5～30℃）
     const selOn = document.getElementById('selOn');
     const selOff = document.getElementById('selOff');
     for (let t = 5; t <= 30; t++) {
@@ -128,7 +128,6 @@ window.onload = function() {
         selOff.add(new Option(t + '℃', t));
     }
     
-    // ダクト温度（2～15℃）
     const selDuct = document.getElementById('selDuct');
     for (let t = 2; t <= 15; t++) selDuct.add(new Option(t + '℃', t));
 
@@ -158,7 +157,8 @@ function updateFromTime() {
     updateFromMin(diffMin);
 }
 
-function startAutoMode() {
+// ★修正: コマンド衝突を防ぐための非同期制御 (await) を追加
+async function startAutoMode() {
     let min = parseInt(document.getElementById('setDur').value, 10);
     if (!isNaN(min) && min > 720) {
         let h = Math.floor(min / 60);
@@ -167,8 +167,8 @@ function startAutoMode() {
             return;
         }
     }
-    saveSettings(); // 開始前に現在画面の値を保存
-    setTimeout(() => { sendCommand('A,1'); }, 300); // 保存通信の直後に開始コマンドを発行
+    await saveSettings(); // 保存完了を待つ
+    setTimeout(async () => { await sendCommand('A,1'); }, 500); // 余裕を持たせて開始コマンドを発行
 }
 
 // ==========================================
@@ -179,13 +179,11 @@ const CHAR_STATUS_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
 const CHAR_CMD_UUID = '8c772be5-e0d0-4251-bb5c-1f6874eb7310';
 let bleDevice, cmdCharacteristic;
 
-// ★追加：ボタンの有効/無効を切り替える関数（問3対策）
 function setControlsEnabled(enabled) {
     const buttons = document.querySelectorAll('.card button');
     buttons.forEach(btn => btn.disabled = !enabled);
 }
 
-// ページ読み込み時はボタンを無効にしておく
 window.addEventListener('load', () => { setControlsEnabled(false); });
 
 document.getElementById('connectBtn').addEventListener('click', async () => {
@@ -196,18 +194,17 @@ document.getElementById('connectBtn').addEventListener('click', async () => {
             optionalServices: [SERVICE_UUID]
         });
         
-        // ★修正：BLEが切断されたときの処理（問3対策）
         bleDevice.addEventListener('gattserverdisconnected', () => {
             document.getElementById('statusTxt').innerText = "切断されました";
             document.getElementById('statusTxt').style.color = "red";
             cmdCharacteristic = null;
             
-            // 温度と秒数をリセット
             document.getElementById('rTemp').innerText = "--";
             document.getElementById('dTemp').innerText = "--";
             document.getElementById('dataAge').innerText = "--";
+            document.getElementById('espnowStatus').innerText = "未接続";
+            document.getElementById('espnowStatus').style.color = "orange";
             
-            // ボタンをグレーアウトして誤操作を防ぐ
             setControlsEnabled(false);
         });
         
@@ -225,7 +222,6 @@ document.getElementById('connectBtn').addEventListener('click', async () => {
         document.getElementById('statusTxt').innerText = "接続完了 (通信中)";
         document.getElementById('statusTxt').style.color = "blue";
         
-        // 接続完了でボタンを有効化
         setControlsEnabled(true);
         
     } catch (e) {
@@ -237,9 +233,8 @@ document.getElementById('connectBtn').addEventListener('click', async () => {
 function handleStatusUpdate(event) {
     const parts = new TextDecoder().decode(event.target.value).split(',');
 
-    // 追記：ACK受信時のメッセージ表示
     if (parts[0] === 'ACK') {
-        alert("ヒーターがコマンドを受信しました"); // 未定義のshowFeedbackをalertに変更
+        alert("ヒーターがコマンドを受信しました"); 
         return;
     }
     
@@ -249,13 +244,17 @@ function handleStatusUpdate(event) {
             dataAge = parseInt(parts[10]);
         }
         
-        // ★追加：90秒以上データが来ていなければエラー表示（問1対策）
+        // ★追加・修正: ESP-NOW通信状態の可視化とエラー処理
+        let statusEl = document.getElementById('espnowStatus');
+
         if (dataAge > 90) {
+            if(statusEl) { statusEl.innerText = "途絶 (断線・エラー)"; statusEl.style.color = "red"; }
             document.getElementById('rTemp').innerText = "エラー";
             document.getElementById('dTemp').innerText = "エラー";
             document.getElementById('dataAge').innerText = dataAge + " (通信途絶)";
             document.getElementById('dataAge').style.color = "red";
         } else {
+            if(statusEl) { statusEl.innerText = "正常 (通信中)"; statusEl.style.color = "green"; }
             document.getElementById('rTemp').innerText = parseFloat(parts[1]).toFixed(1);
             document.getElementById('dTemp').innerText = parseFloat(parts[2]).toFixed(1);
             document.getElementById('dataAge').innerText = dataAge;
@@ -270,8 +269,7 @@ function handleStatusUpdate(event) {
         const states = ["停止中(OFF)", "点火確認中", "運転中(ON)"];
         document.getElementById('heaterState').innerText = states[parseInt(parts[4])] || "不明";
         
-        // 入力中でない場合のみUI更新
-        // 編集中（未保存）でない場合のみ、ESP32からのデータでUIを上書きする
+        // ★修正: 編集中でない場合のみUIを上書きする
         if (!isSettingsDirty) {
              document.getElementById('setDur').value = parts[6];
              updateFromMin(parts[6]);
@@ -287,14 +285,18 @@ async function sendCommand(cmd) {
     await cmdCharacteristic.writeValue(new TextEncoder().encode(cmd));
 }
 
-function saveSettings() {
+// ★修正: 保存後の同期ロックを数秒間維持し、巻き戻りバグを解消
+async function saveSettings() {
     const dur = document.getElementById('setDur').value || 60;
     const onT = document.getElementById('setOn').value || 10.0;
     const offT = document.getElementById('setOff').value || 15.0;
     const ductT = document.getElementById('setDuct').value || 5.0;
-    sendCommand(`S,${dur},${onT},${offT},${ductT}`);
-    // ★追加: 保存コマンドを送ったらフラグを解除し、同期を再開する
-    isSettingsDirty = false;
+    await sendCommand(`S,${dur},${onT},${offT},${ductT}`);
+    
+    // 保存コマンド送信から2秒間は上書きをロックする
+    setTimeout(() => {
+        isSettingsDirty = false;
+    }, 2000);
 }
 </script>
 </body>
