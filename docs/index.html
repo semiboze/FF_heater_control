@@ -298,6 +298,28 @@ async function saveSettings() {
         isSettingsDirty = false;
     }, 2000);
 }
+// ★追加：ON/OFF温度の矛盾を防ぐ自動連動関数
+function validateTemperatures(source) {
+    const onInput = document.getElementById('setOn');
+    const offInput = document.getElementById('setOff');
+    
+    let onVal = parseFloat(onInput.value);
+    let offVal = parseFloat(offInput.value);
+    
+    if (isNaN(onVal) || isNaN(offVal)) return;
+
+    if (source === 'on') {
+        // ON温度を変更した際、OFF温度がON温度以下なら【ON温度 + 1℃】に補正
+        if (onVal >= offVal) {
+            offInput.value = (onVal + 1.0).toFixed(1);
+        }
+    } else if (source === 'off') {
+        // OFF温度を変更した際、ON温度がOFF温度以上なら【OFF温度 - 1℃】に補正
+        if (offVal <= onVal) {
+            onInput.value = (offVal - 1.0).toFixed(1);
+        }
+    }
+}
 </script>
 </body>
 </html>
