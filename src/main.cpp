@@ -75,6 +75,13 @@ int autoModeMinutes = 60;
 bool autoModeActive = false;
 unsigned long autoModeStartTime = 0;
 
+// 温度上昇による自動停止後だけ、自動での再点火を抑制する。
+// RTCを使わないため、抑制中に再起動した場合は安全側で10分間を
+// あらためて待機する。
+const unsigned long AUTO_OFF_COOLDOWN_MS = 600000UL;
+bool autoOffCooldownActive = false;
+unsigned long autoOffCooldownStartTime = 0;
+
 enum HeaterState { HEATER_OFF, HEATER_IGNITING, HEATER_ON };
 HeaterState currentHeaterState = HEATER_OFF;
 
@@ -177,6 +184,24 @@ void updateLedPattern() {
         if (cmd == 'O' || cmd == 'o') { digitalWrite(PIN_LED, HIGH); }
         currentStep++;
     }
+}
+
+void startAutoOffCooldown() {
+    autoOffCooldownActive = true;
+    autoOffCooldownStartTime = millis();
+    prefs.putBool("autooffcool", true);
+}
+
+bool isAutoOffCooldownActive() {
+    if (!autoOffCooldownActive) return false;
+
+    if (millis() - autoOffCooldownStartTime < AUTO_OFF_COOLDOWN_MS) {
+        return true;
+    }
+
+    autoOffCooldownActive = false;
+    prefs.putBool("autooffcool", false);
+    return false;
 }
 
 // ==================== BLE クラス ====================
@@ -289,6 +314,10 @@ void setup() {
     targetOnTemp = prefs.getFloat("ontemp", 10.0);
     targetOffTemp = prefs.getFloat("offtemp", 15.0);
     ductThreshTemp = prefs.getFloat("ductthresh", 5.0);
+    if (prefs.getBool("autooffcool", false)) {
+        autoOffCooldownActive = true;
+        autoOffCooldownStartTime = millis();
+    }
     
     BLEDevice::init("FF_Heater");
     pServer = BLEDevice::createServer();
@@ -322,6 +351,10 @@ void handleBLEConnection() {
 }
 
 void handleAutoControl() {
+    // クールダウン終了を自動モードの有無に関係なく処理し、
+    // 不揮発メモリのフラグを不要に残さない。
+    bool cooldownActive = isAutoOffCooldownActive();
+
     if (!autoModeActive) return;
 
     unsigned long currentMillis = millis();
@@ -330,12 +363,16 @@ void handleAutoControl() {
         if (currentHeaterState != HEATER_OFF) {
             triggerButton(BTN_OFF); 
             currentHeaterState = HEATER_OFF;
+            startAutoOffCooldown();
         }
         return;
     } 
 
     switch (currentHeaterState) {
         case HEATER_OFF:
+            if (cooldownActive) {
+                break;
+            }
             if (currentRoomTemp <= targetOnTemp) {
                 triggerButton(BTN_ON);
                 currentHeaterState = HEATER_IGNITING;
@@ -359,6 +396,7 @@ void handleAutoControl() {
             if (currentRoomTemp >= targetOffTemp) {
                 triggerButton(BTN_OFF);
                 currentHeaterState = HEATER_OFF;
+                startAutoOffCooldown();
             }
             break;
     }
