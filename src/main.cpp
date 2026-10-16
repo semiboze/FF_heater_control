@@ -11,18 +11,9 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include "HeaterControl.h"
+#include "SensorPacket.h"
 
-// Version 1 stays compatible with the sensor node. Invalid temperatures are NaN.
-struct SensorData {
-    uint8_t version;
-    float roomTemp;
-    float roomHum;
-    float ductTemp;
-    float ductHum;
-    float batteryVoltage;
-};
-static_assert(sizeof(SensorData) == 24, "Sensor packet layout changed");
-struct ReceivedSensor { SensorData data; uint32_t receivedAt; };
+using ffheater::ReceivedSensor;
 struct ReceivedCommand { char text[80]; };
 QueueHandle_t sensorQueue = nullptr;
 QueueHandle_t commandQueue = nullptr;
@@ -121,11 +112,9 @@ void updateButtonPulses() {
 }
 
 void OnDataRecv(const uint8_t* mac, const uint8_t* bytes, int len) {
-    if (!sensorQueue || len != sizeof(SensorData) || memcmp(mac, SENDER_MAC, 6) != 0) return;
+    if (!sensorQueue) return;
     ReceivedSensor packet{};
-    memcpy(&packet.data, bytes, sizeof(packet.data));
-    if (packet.data.version != 1) return;
-    packet.receivedAt = millis();
+    if (!ffheater::decodeSensorPacket(mac, bytes, len, millis(), packet)) return;
     xQueueSend(sensorQueue, &packet, 0);
 }
 
@@ -268,6 +257,8 @@ void setup() {
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
     esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+    Serial.printf("FF heater receiver: 20261016-rx1, STA MAC=%s, channel=%d\n",
+        WiFi.macAddress().c_str(), WiFi.channel());
     if (esp_now_init() == ESP_OK) {
         esp_now_peer_info_t peer{};
         memcpy(peer.peer_addr, SENDER_MAC, 6);
@@ -300,8 +291,13 @@ void loop() {
     updateButtonPulses();
     handleBLEConnection();
     ReceivedSensor packet{};
-    while (xQueueReceive(sensorQueue, &packet, 0) == pdTRUE)
+    while (xQueueReceive(sensorQueue, &packet, 0) == pdTRUE) {
+        Serial.printf("Sensor RX %02X:%02X:%02X:%02X:%02X:%02X room=%.1f duct=%.1f\n",
+            packet.sourceMac[0], packet.sourceMac[1], packet.sourceMac[2],
+            packet.sourceMac[3], packet.sourceMac[4], packet.sourceMac[5],
+            packet.data.roomTemp, packet.data.ductTemp);
         controller.receive(packet.data.roomTemp, packet.data.ductTemp, packet.receivedAt);
+    }
 
     const uint32_t now = millis();
     ffheater::Command effect = controller.tick(now);
