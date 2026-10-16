@@ -8,6 +8,8 @@
         body { font-family: sans-serif; background: #f0f2f5; color: #333; padding: 10px; max-width: 500px; margin: auto; }
         .card { background: #fff; padding: 15px; margin-bottom: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         h2, h3 { margin-top: 0; }
+        .status-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+        .html-version { font-size: 11px; font-weight: normal; color: #555; white-space: nowrap; }
         .btn { display: inline-block; padding: 12px 15px; background: #007bff; color: #fff; border: none; border-radius: 4px; cursor: pointer; text-decoration: none; text-align: center; margin: 5px 0; box-sizing: border-box; font-size: 16px; width: 100%; box-shadow: 0 4px #0056b3; }
         .btn:active { box-shadow: none; transform: translateY(4px); }
         .btn:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
@@ -23,7 +25,6 @@
 </head>
 <body>
 
-<p style="text-align:center; font-size:0.8em; color:#555;">画面版：20261016-ble1（Bluetooth自動再接続版・受信修正対応）</p>
 <button id="connectBtn" class="btn" style="background:#17a2b8; box-shadow:0 4px #117a8b;">ESP32に接続 (BLE)</button>
 <button id="chooseDeviceBtn" class="btn" style="background:#6c757d; box-shadow:0 4px #5a6268;" hidden>接続先を選び直す</button>
 <p style="text-align:center; font-weight:bold;">ステータス: <span id="statusTxt">未接続</span></p>
@@ -31,7 +32,7 @@
 <p id="commandFeedback" role="status" aria-live="polite" style="font-size:0.9em;"></p>
 
 <div class="card">
-    <h3>現在のステータス</h3>
+    <h3 class="status-heading"><span>現在のステータス</span><small id="htmlVersion" class="html-version">HTML v20261016-ble2</small></h3>
     <p>通信状態: <span id="espnowStatus" style="font-weight:bold; color:orange;">不明（BLE未接続）</span></p>
     <p>室内温度 (Port 13): <strong><span id="rTemp">--</span> ℃</strong><br><small id="roomSensorStatus">取得状態不明</small></p>
     <p>ダクト温度 (Port 14): <strong><span id="dTemp">--</span> ℃</strong><br><small id="ductSensorStatus">取得状態不明</small></p>
