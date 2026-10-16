@@ -23,9 +23,11 @@
 </head>
 <body>
 
-<p style="text-align:center; font-size:0.8em; color:#555;">画面版：20261016-rx1（センサー受信修正版）</p>
+<p style="text-align:center; font-size:0.8em; color:#555;">画面版：20261016-ble1（Bluetooth自動再接続版・受信修正対応）</p>
 <button id="connectBtn" class="btn" style="background:#17a2b8; box-shadow:0 4px #117a8b;">ESP32に接続 (BLE)</button>
+<button id="chooseDeviceBtn" class="btn" style="background:#6c757d; box-shadow:0 4px #5a6268;" hidden>接続先を選び直す</button>
 <p style="text-align:center; font-weight:bold;">ステータス: <span id="statusTxt">未接続</span></p>
+<p style="font-size:0.85em; color:#555;">一度接続した後は、この画面を開いている間、切断時に2〜10秒間隔で自動再接続します。画面の再読み込み・アプリ終了後は、最初の接続操作が必要です。</p>
 <p id="commandFeedback" role="status" aria-live="polite" style="font-size:0.9em;"></p>
 
 <div class="card">
@@ -200,6 +202,16 @@ let pendingCommand = null;
 let gattWriteQueue = Promise.resolve();
 let autoStartSequence = 0;
 const COMMAND_RESPONSE_TIMEOUT_MS = 5000;
+const RECONNECT_DELAYS_MS = [2000, 5000, 10000];
+const BLE_CONNECTION_TIMEOUT_MS = 12000;
+let statusCharacteristic = null;
+let statusNotificationHandler = null;
+let connectionAttempt = null;
+let connectionGeneration = 0;
+let reconnectTimer = null;
+let reconnectAttempt = 0;
+let autoReconnectWanted = false;
+let devicePickerBusy = false;
 
 function cancelAutoStart() {
     autoStartSequence++;
@@ -226,6 +238,9 @@ function setControlsEnabled(enabled) {
 
 function clearLiveStatus() {
     cancelAutoStart();
+    // A write promise from the old connection may never settle. It must not
+    // block writes on a new connection, nor replay an old command there.
+    gattWriteQueue = Promise.resolve();
     if (pendingCommand) {
         finishPendingCommand(false);
         setCommandFeedback('接続が切れたため操作結果を確認できません。再接続して確認してください。', true);
@@ -251,44 +266,188 @@ function clearLiveStatus() {
 
 window.addEventListener('load', clearLiveStatus);
 
-document.getElementById('connectBtn').addEventListener('click', async () => {
-    if (!navigator.bluetooth) { alert("Web Bluetooth API非対応ブラウザです。"); return; }
-    try {
-        bleDevice = await navigator.bluetooth.requestDevice({
-            filters: [{ name: 'FF_Heater' }],
-            optionalServices: [SERVICE_UUID]
-        });
-        
-        bleDevice.addEventListener('gattserverdisconnected', () => {
-            document.getElementById('statusTxt').innerText = "切断されました";
-            document.getElementById('statusTxt').style.color = "red";
-            cmdCharacteristic = null;
-            
-            clearLiveStatus();
-        });
-        
-        document.getElementById('statusTxt').innerText = "接続交渉中...";
-        document.getElementById('statusTxt').style.color = "black";
-        
-        const server = await bleDevice.gatt.connect();
-        const service = await server.getPrimaryService(SERVICE_UUID);
-        cmdCharacteristic = await service.getCharacteristic(CHAR_CMD_UUID);
-        const statusChar = await service.getCharacteristic(CHAR_STATUS_UUID);
-        
-        await statusChar.startNotifications();
-        statusChar.addEventListener('characteristicvaluechanged', handleStatusUpdate);
-        
-        document.getElementById('statusTxt').innerText = "接続完了 (通信中)";
-        document.getElementById('statusTxt').style.color = "blue";
-        setControlsEnabled(true);
-        
-    } catch (e) {
-        cmdCharacteristic = null;
-        clearLiveStatus();
-        document.getElementById('statusTxt').innerText = "エラー: " + e.message;
-        document.getElementById('statusTxt').style.color = "red";
+function pageIsActive() { return document.visibilityState !== 'hidden'; }
+
+function setConnectionStatus(message, color = 'black') {
+    document.getElementById('statusTxt').innerText = message;
+    document.getElementById('statusTxt').style.color = color;
+}
+
+function updateConnectionButtons() {
+    const connected = !!(cmdCharacteristic && bleDevice?.gatt.connected);
+    const button = document.getElementById('connectBtn');
+    button.disabled = devicePickerBusy || !!connectionAttempt || connected;
+    button.innerText = connected ? '接続済み' : bleDevice ? '今すぐ再接続' : 'ESP32に接続 (BLE)';
+    const chooser = document.getElementById('chooseDeviceBtn');
+    chooser.hidden = !bleDevice;
+    chooser.disabled = devicePickerBusy || !!connectionAttempt;
+}
+
+function clearReconnectTimer() {
+    if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+}
+
+function removeStatusListener() {
+    if (statusCharacteristic && statusNotificationHandler)
+        statusCharacteristic.removeEventListener('characteristicvaluechanged', statusNotificationHandler);
+    statusCharacteristic = null;
+    statusNotificationHandler = null;
+}
+
+function invalidateBleSession(disconnectDevice = false) {
+    ++connectionGeneration;
+    const attempt = connectionAttempt;
+    connectionAttempt = null;
+    if (attempt) {
+        clearTimeout(attempt.timeout);
+        attempt.cancel(new Error('接続処理を中断しました。'));
     }
-});
+    removeStatusListener();
+    cmdCharacteristic = null;
+    clearLiveStatus();
+    if (disconnectDevice && bleDevice?.gatt) {
+        try { bleDevice.gatt.disconnect(); } catch (_) { /* Already disconnected. */ }
+    }
+    updateConnectionButtons();
+}
+
+function scheduleReconnect() {
+    if (!autoReconnectWanted || !bleDevice || connectionAttempt || reconnectTimer !== null) return;
+    if (!pageIsActive()) {
+        setConnectionStatus('再接続待機中（画面に戻ると再試行）', '#b56a00');
+        return;
+    }
+    const delay = RECONNECT_DELAYS_MS[Math.min(reconnectAttempt, RECONNECT_DELAYS_MS.length - 1)];
+    ++reconnectAttempt;
+    setConnectionStatus(`切断中：${delay / 1000}秒後に自動再接続します`, '#b56a00');
+    reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        reconnectKnownDevice();
+    }, delay);
+    updateConnectionButtons();
+}
+
+function handleBleDisconnect(event) {
+    if (event?.target && event.target !== bleDevice) return;
+    // A delayed disconnect event from an older attempt must not tear down a
+    // newer, already connected session using the same BluetoothDevice object.
+    if (bleDevice?.gatt.connected) return;
+    invalidateBleSession();
+    scheduleReconnect();
+}
+
+function reconnectKnownDevice() {
+    if (connectionAttempt) return connectionAttempt.promise;
+    if (!autoReconnectWanted || !bleDevice || !pageIsActive()) return Promise.resolve(false);
+    if (cmdCharacteristic && bleDevice.gatt.connected) return Promise.resolve(true);
+    clearReconnectTimer();
+    const device = bleDevice;
+    const attempt = { generation: ++connectionGeneration, device };
+    connectionAttempt = attempt;
+    const cancelled = new Promise((_, reject) => { attempt.cancel = reject; });
+    const ensureCurrent = () => {
+        if (connectionAttempt !== attempt || connectionGeneration !== attempt.generation || bleDevice !== device)
+            throw new Error('古い接続処理です。');
+    };
+    setConnectionStatus(reconnectAttempt ? '自動再接続中...' : '接続交渉中...');
+    setControlsEnabled(false);
+    updateConnectionButtons();
+    attempt.timeout = setTimeout(() => attempt.cancel(new Error('Bluetooth接続が時間切れになりました。')),
+        BLE_CONNECTION_TIMEOUT_MS);
+
+    const connect = (async () => {
+        const server = await device.gatt.connect();
+        ensureCurrent();
+        const service = await server.getPrimaryService(SERVICE_UUID);
+        ensureCurrent();
+        const command = await service.getCharacteristic(CHAR_CMD_UUID);
+        ensureCurrent();
+        const status = await service.getCharacteristic(CHAR_STATUS_UUID);
+        ensureCurrent();
+        removeStatusListener();
+        statusCharacteristic = status;
+        statusNotificationHandler = event => {
+            if (connectionGeneration === attempt.generation && bleDevice === device &&
+                statusCharacteristic === status && device.gatt.connected) handleStatusUpdate(event);
+        };
+        status.addEventListener('characteristicvaluechanged', statusNotificationHandler);
+        await status.startNotifications();
+        ensureCurrent();
+        if (!device.gatt.connected) throw new Error('接続が切れました。');
+        cmdCharacteristic = command;
+        reconnectAttempt = 0;
+        setConnectionStatus('接続完了 (通信中)', 'blue');
+        setControlsEnabled(true);
+        return true;
+    })();
+    attempt.promise = Promise.race([connect, cancelled]).catch(error => {
+        if (connectionAttempt !== attempt || connectionGeneration !== attempt.generation) return false;
+        invalidateBleSession(true);
+        scheduleReconnect();
+        setCommandFeedback('Bluetoothに接続できません。自動で再試行します。必要なら接続先を選び直してください。 ' + error.message, true);
+        return false;
+    }).finally(() => {
+        clearTimeout(attempt.timeout);
+        if (connectionAttempt === attempt) connectionAttempt = null;
+        updateConnectionButtons();
+    });
+    return attempt.promise;
+}
+
+async function selectAndConnectDevice(forceSelection = false) {
+    if (connectionAttempt) return connectionAttempt.promise;
+    if (devicePickerBusy) return false;
+    if (bleDevice && !forceSelection) {
+        clearReconnectTimer();
+        reconnectAttempt = 0;
+        return reconnectKnownDevice();
+    }
+    if (!navigator.bluetooth) { alert('Web Bluetooth API非対応ブラウザです。'); return false; }
+    devicePickerBusy = true;
+    clearReconnectTimer();
+    updateConnectionButtons();
+    try {
+        // Only this user-click path opens a device chooser. Retries reuse the
+        // existing permission and BluetoothDevice, never a public MAC address.
+        const device = await navigator.bluetooth.requestDevice({
+            filters: [{ name: 'FF_Heater' }], optionalServices: [SERVICE_UUID]
+        });
+        if (bleDevice) {
+            bleDevice.removeEventListener('gattserverdisconnected', handleBleDisconnect);
+            invalidateBleSession(true);
+        }
+        bleDevice = device;
+        bleDevice.addEventListener('gattserverdisconnected', handleBleDisconnect);
+        autoReconnectWanted = true;
+        reconnectAttempt = 0;
+        return await reconnectKnownDevice();
+    } catch (error) {
+        if (!cmdCharacteristic) {
+            setConnectionStatus('接続先を選択できませんでした。接続ボタンからやり直してください。', 'red');
+            if (autoReconnectWanted) scheduleReconnect();
+        }
+        return false;
+    } finally {
+        devicePickerBusy = false;
+        updateConnectionButtons();
+    }
+}
+
+function handlePageVisibilityChange() {
+    if (!pageIsActive()) {
+        clearReconnectTimer();
+        if (connectionAttempt) invalidateBleSession(true);
+        if (autoReconnectWanted && !cmdCharacteristic)
+            setConnectionStatus('再接続待機中（画面に戻ると再試行）', '#b56a00');
+    } else if (autoReconnectWanted && bleDevice && (!bleDevice.gatt.connected || !cmdCharacteristic)) {
+        reconnectKnownDevice();
+    }
+}
+
+document.getElementById('connectBtn').addEventListener('click', () => selectAndConnectDevice());
+document.getElementById('chooseDeviceBtn').addEventListener('click', () => selectAndConnectDevice(true));
+document.addEventListener('visibilitychange', handlePageVisibilityChange);
 
 function readNumber(parts, index) {
     if (typeof parts[index] !== 'string' || parts[index].trim() === '') return null;
