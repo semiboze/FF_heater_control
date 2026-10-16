@@ -8,8 +8,11 @@
         body { font-family: sans-serif; background: #f0f2f5; color: #333; padding: 10px; max-width: 500px; margin: auto; }
         .card { background: #fff; padding: 15px; margin-bottom: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         h2, h3 { margin-top: 0; }
+        .status-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+        .html-version { font-size: 11px; font-weight: normal; color: #555; white-space: nowrap; }
         .btn { display: inline-block; padding: 12px 15px; background: #007bff; color: #fff; border: none; border-radius: 4px; cursor: pointer; text-decoration: none; text-align: center; margin: 5px 0; box-sizing: border-box; font-size: 16px; width: 100%; box-shadow: 0 4px #0056b3; }
         .btn:active { box-shadow: none; transform: translateY(4px); }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
         .btn-danger { background: #dc3545; box-shadow: 0 4px #a71d2a; }
         .btn-success { background: #28a745; box-shadow: 0 4px #1e7e34; }
         .flex { display: flex; gap: 10px; }
@@ -23,17 +26,26 @@
 <body>
 
 <button id="connectBtn" class="btn" style="background:#17a2b8; box-shadow:0 4px #117a8b;">ESP32に接続 (BLE)</button>
+<button id="chooseDeviceBtn" class="btn" style="background:#6c757d; box-shadow:0 4px #5a6268;" hidden>接続先を選び直す</button>
 <p style="text-align:center; font-weight:bold;">ステータス: <span id="statusTxt">未接続</span></p>
+<p style="font-size:0.85em; color:#555;">一度接続した後は、この画面を開いている間、切断時に2〜10秒間隔で自動再接続します。画面の再読み込み・アプリ終了後は、最初の接続操作が必要です。</p>
+<p id="commandFeedback" role="status" aria-live="polite" style="font-size:0.9em;"></p>
 
 <div class="card">
-    <h3>現在のステータス</h3>
-    <p>通信状態: <span id="espnowStatus" style="font-weight:bold; color:orange;">確認中...</span></p>
-    <p>室内温度 (Port 13): <strong><span id="rTemp">--</span> ℃</strong></p>
-    <p>ダクト温度 (Port 14): <strong><span id="dTemp">--</span> ℃</strong></p>
+    <h3 class="status-heading"><span>現在のステータス</span><small id="htmlVersion" class="html-version">HTML v20261016-ble2</small></h3>
+    <p>通信状態: <span id="espnowStatus" style="font-weight:bold; color:orange;">不明（BLE未接続）</span></p>
+    <p>室内温度 (Port 13): <strong><span id="rTemp">--</span> ℃</strong><br><small id="roomSensorStatus">取得状態不明</small></p>
+    <p>ダクト温度 (Port 14): <strong><span id="dTemp">--</span> ℃</strong><br><small id="ductSensorStatus">取得状態不明</small></p>
     <p style="font-size: 0.9em; color: #555;">センサー最終更新: <strong><span id="dataAge">--</span> 秒前</strong></p>
-    <p>自動制御モード: <strong><span id="autoState">無効（停止中）</span></strong></p>
+    <p>自動制御モード: <strong><span id="autoState">不明（BLE未接続）</span></strong></p>
     <p>残り時間: <strong><span id="remainTime">--</span></strong></p>
-    <p>ヒーター仮想状態: <strong><span id="heaterState">停止中(OFF)</span></strong></p>
+    <p>ヒーター状態（推定）: <strong><span id="heaterState">不明（BLE未接続）</span></strong></p>
+    <p>温度制御: <strong><span id="controlMode">--</span></strong></p>
+    <p>室温代替運転の残り時間: <strong><span id="fallbackRemain">--</span></strong></p>
+    <p>点火ON送信: <strong><span id="ignitionAttempts">--</span></strong></p>
+    <p>再点火までの待機: <strong><span id="cooldownRemain">--</span></strong></p>
+    <p>自動運転の停止理由: <strong><span id="stopReason">--</span></strong></p>
+    <p style="font-size: 0.85em; color: #555;">取得不能のセンサーは、2回連続で正常に取得できると通常の判定に戻ります。ダクト温度を取得できない間は点火を確認できません。</p>
 </div>
 
 <div class="card">
@@ -169,6 +181,8 @@ function updateFromTime() {
 }
 
 async function startAutoMode() {
+    cancelAutoStart();
+    const attempt = autoStartSequence;
     let min = parseInt(document.getElementById('setDur').value, 10);
     if (!isNaN(min) && min > 720) {
         let h = Math.floor(min / 60);
@@ -177,122 +191,420 @@ async function startAutoMode() {
             return;
         }
     }
-    await saveSettings();
-    setTimeout(async () => { await sendCommand('A,1'); }, 500); 
+    if (!await saveSettings() || attempt !== autoStartSequence) return;
+    await sendCommand('A,1');
 }
 
 const SERVICE_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
 const CHAR_STATUS_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
 const CHAR_CMD_UUID = '8c772be5-e0d0-4251-bb5c-1f6874eb7310';
 let bleDevice, cmdCharacteristic;
+let pendingCommand = null;
+let gattWriteQueue = Promise.resolve();
+let autoStartSequence = 0;
+const COMMAND_RESPONSE_TIMEOUT_MS = 5000;
+const RECONNECT_DELAYS_MS = [2000, 5000, 10000];
+const BLE_CONNECTION_TIMEOUT_MS = 12000;
+let statusCharacteristic = null;
+let statusNotificationHandler = null;
+let connectionAttempt = null;
+let connectionGeneration = 0;
+let reconnectTimer = null;
+let reconnectAttempt = 0;
+let autoReconnectWanted = false;
+let devicePickerBusy = false;
+
+function cancelAutoStart() {
+    autoStartSequence++;
+}
+
+function setCommandFeedback(message, isError = false) {
+    const feedback = document.getElementById('commandFeedback');
+    feedback.innerText = message;
+    feedback.style.color = isError ? 'red' : 'green';
+}
+
+function finishPendingCommand(accepted) {
+    if (!pendingCommand) return;
+    const request = pendingCommand;
+    pendingCommand = null;
+    clearTimeout(request.timeout);
+    request.resolve(accepted);
+}
 
 function setControlsEnabled(enabled) {
     const buttons = document.querySelectorAll('.card button');
     buttons.forEach(btn => btn.disabled = !enabled);
 }
 
-window.addEventListener('load', () => { setControlsEnabled(false); });
-
-document.getElementById('connectBtn').addEventListener('click', async () => {
-    if (!navigator.bluetooth) { alert("Web Bluetooth API非対応ブラウザです。"); return; }
-    try {
-        bleDevice = await navigator.bluetooth.requestDevice({
-            filters: [{ name: 'FF_Heater' }],
-            optionalServices: [SERVICE_UUID]
-        });
-        
-        bleDevice.addEventListener('gattserverdisconnected', () => {
-            document.getElementById('statusTxt').innerText = "切断されました";
-            document.getElementById('statusTxt').style.color = "red";
-            cmdCharacteristic = null;
-            
-            document.getElementById('rTemp').innerText = "--";
-            document.getElementById('dTemp').innerText = "--";
-            document.getElementById('dataAge').innerText = "--";
-            document.getElementById('espnowStatus').innerText = "未接続";
-            document.getElementById('espnowStatus').style.color = "orange";
-            
-            setControlsEnabled(false);
-        });
-        
-        document.getElementById('statusTxt').innerText = "接続交渉中...";
-        document.getElementById('statusTxt').style.color = "black";
-        
-        const server = await bleDevice.gatt.connect();
-        const service = await server.getPrimaryService(SERVICE_UUID);
-        cmdCharacteristic = await service.getCharacteristic(CHAR_CMD_UUID);
-        const statusChar = await service.getCharacteristic(CHAR_STATUS_UUID);
-        
-        await statusChar.startNotifications();
-        statusChar.addEventListener('characteristicvaluechanged', handleStatusUpdate);
-        
-        document.getElementById('statusTxt').innerText = "接続完了 (通信中)";
-        document.getElementById('statusTxt').style.color = "blue";
-        setControlsEnabled(true);
-        
-    } catch (e) {
-        document.getElementById('statusTxt').innerText = "エラー: " + e.message;
-        document.getElementById('statusTxt').style.color = "red";
+function clearLiveStatus() {
+    cancelAutoStart();
+    // A write promise from the old connection may never settle. It must not
+    // block writes on a new connection, nor replay an old command there.
+    gattWriteQueue = Promise.resolve();
+    if (pendingCommand) {
+        finishPendingCommand(false);
+        setCommandFeedback('接続が切れたため操作結果を確認できません。再接続して確認してください。', true);
+    } else {
+        setCommandFeedback('');
     }
-});
+    ['rTemp', 'dTemp', 'dataAge', 'remainTime', 'controlMode', 'fallbackRemain',
+        'ignitionAttempts', 'cooldownRemain', 'stopReason'].forEach(id => {
+        document.getElementById(id).innerText = '--';
+    });
+    ['autoState', 'heaterState'].forEach(id => {
+        document.getElementById(id).innerText = '不明（BLE未接続）';
+    });
+    ['roomSensorStatus', 'ductSensorStatus'].forEach(id => {
+        document.getElementById(id).innerText = '取得状態不明';
+        document.getElementById(id).style.color = '#555';
+    });
+    document.getElementById('dataAge').style.color = '#555';
+    document.getElementById('espnowStatus').innerText = '不明（BLE未接続）';
+    document.getElementById('espnowStatus').style.color = 'orange';
+    setControlsEnabled(false);
+}
+
+window.addEventListener('load', clearLiveStatus);
+
+function pageIsActive() { return document.visibilityState !== 'hidden'; }
+
+function setConnectionStatus(message, color = 'black') {
+    document.getElementById('statusTxt').innerText = message;
+    document.getElementById('statusTxt').style.color = color;
+}
+
+function updateConnectionButtons() {
+    const connected = !!(cmdCharacteristic && bleDevice?.gatt.connected);
+    const button = document.getElementById('connectBtn');
+    button.disabled = devicePickerBusy || !!connectionAttempt || connected;
+    button.innerText = connected ? '接続済み' : bleDevice ? '今すぐ再接続' : 'ESP32に接続 (BLE)';
+    const chooser = document.getElementById('chooseDeviceBtn');
+    chooser.hidden = !bleDevice;
+    chooser.disabled = devicePickerBusy || !!connectionAttempt;
+}
+
+function clearReconnectTimer() {
+    if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+}
+
+function removeStatusListener() {
+    if (statusCharacteristic && statusNotificationHandler)
+        statusCharacteristic.removeEventListener('characteristicvaluechanged', statusNotificationHandler);
+    statusCharacteristic = null;
+    statusNotificationHandler = null;
+}
+
+function invalidateBleSession(disconnectDevice = false) {
+    ++connectionGeneration;
+    const attempt = connectionAttempt;
+    connectionAttempt = null;
+    if (attempt) {
+        clearTimeout(attempt.timeout);
+        attempt.cancel(new Error('接続処理を中断しました。'));
+    }
+    removeStatusListener();
+    cmdCharacteristic = null;
+    clearLiveStatus();
+    if (disconnectDevice && bleDevice?.gatt) {
+        try { bleDevice.gatt.disconnect(); } catch (_) { /* Already disconnected. */ }
+    }
+    updateConnectionButtons();
+}
+
+function scheduleReconnect() {
+    if (!autoReconnectWanted || !bleDevice || connectionAttempt || reconnectTimer !== null) return;
+    if (!pageIsActive()) {
+        setConnectionStatus('再接続待機中（画面に戻ると再試行）', '#b56a00');
+        return;
+    }
+    const delay = RECONNECT_DELAYS_MS[Math.min(reconnectAttempt, RECONNECT_DELAYS_MS.length - 1)];
+    ++reconnectAttempt;
+    setConnectionStatus(`切断中：${delay / 1000}秒後に自動再接続します`, '#b56a00');
+    reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        reconnectKnownDevice();
+    }, delay);
+    updateConnectionButtons();
+}
+
+function handleBleDisconnect(event) {
+    if (event?.target && event.target !== bleDevice) return;
+    // A delayed disconnect event from an older attempt must not tear down a
+    // newer, already connected session using the same BluetoothDevice object.
+    if (bleDevice?.gatt.connected) return;
+    invalidateBleSession();
+    scheduleReconnect();
+}
+
+function reconnectKnownDevice() {
+    if (connectionAttempt) return connectionAttempt.promise;
+    if (!autoReconnectWanted || !bleDevice || !pageIsActive()) return Promise.resolve(false);
+    if (cmdCharacteristic && bleDevice.gatt.connected) return Promise.resolve(true);
+    clearReconnectTimer();
+    const device = bleDevice;
+    const attempt = { generation: ++connectionGeneration, device };
+    connectionAttempt = attempt;
+    const cancelled = new Promise((_, reject) => { attempt.cancel = reject; });
+    const ensureCurrent = () => {
+        if (connectionAttempt !== attempt || connectionGeneration !== attempt.generation || bleDevice !== device)
+            throw new Error('古い接続処理です。');
+    };
+    setConnectionStatus(reconnectAttempt ? '自動再接続中...' : '接続交渉中...');
+    setControlsEnabled(false);
+    updateConnectionButtons();
+    attempt.timeout = setTimeout(() => attempt.cancel(new Error('Bluetooth接続が時間切れになりました。')),
+        BLE_CONNECTION_TIMEOUT_MS);
+
+    const connect = (async () => {
+        const server = await device.gatt.connect();
+        ensureCurrent();
+        const service = await server.getPrimaryService(SERVICE_UUID);
+        ensureCurrent();
+        const command = await service.getCharacteristic(CHAR_CMD_UUID);
+        ensureCurrent();
+        const status = await service.getCharacteristic(CHAR_STATUS_UUID);
+        ensureCurrent();
+        removeStatusListener();
+        statusCharacteristic = status;
+        statusNotificationHandler = event => {
+            if (connectionGeneration === attempt.generation && bleDevice === device &&
+                statusCharacteristic === status && device.gatt.connected) handleStatusUpdate(event);
+        };
+        status.addEventListener('characteristicvaluechanged', statusNotificationHandler);
+        await status.startNotifications();
+        ensureCurrent();
+        if (!device.gatt.connected) throw new Error('接続が切れました。');
+        cmdCharacteristic = command;
+        reconnectAttempt = 0;
+        setConnectionStatus('接続完了 (通信中)', 'blue');
+        setControlsEnabled(true);
+        return true;
+    })();
+    attempt.promise = Promise.race([connect, cancelled]).catch(error => {
+        if (connectionAttempt !== attempt || connectionGeneration !== attempt.generation) return false;
+        invalidateBleSession(true);
+        scheduleReconnect();
+        setCommandFeedback('Bluetoothに接続できません。自動で再試行します。必要なら接続先を選び直してください。 ' + error.message, true);
+        return false;
+    }).finally(() => {
+        clearTimeout(attempt.timeout);
+        if (connectionAttempt === attempt) connectionAttempt = null;
+        updateConnectionButtons();
+    });
+    return attempt.promise;
+}
+
+async function selectAndConnectDevice(forceSelection = false) {
+    if (connectionAttempt) return connectionAttempt.promise;
+    if (devicePickerBusy) return false;
+    if (bleDevice && !forceSelection) {
+        clearReconnectTimer();
+        reconnectAttempt = 0;
+        return reconnectKnownDevice();
+    }
+    if (!navigator.bluetooth) { alert('Web Bluetooth API非対応ブラウザです。'); return false; }
+    devicePickerBusy = true;
+    clearReconnectTimer();
+    updateConnectionButtons();
+    try {
+        // Only this user-click path opens a device chooser. Retries reuse the
+        // existing permission and BluetoothDevice, never a public MAC address.
+        const device = await navigator.bluetooth.requestDevice({
+            filters: [{ name: 'FF_Heater' }], optionalServices: [SERVICE_UUID]
+        });
+        if (bleDevice) {
+            bleDevice.removeEventListener('gattserverdisconnected', handleBleDisconnect);
+            invalidateBleSession(true);
+        }
+        bleDevice = device;
+        bleDevice.addEventListener('gattserverdisconnected', handleBleDisconnect);
+        autoReconnectWanted = true;
+        reconnectAttempt = 0;
+        return await reconnectKnownDevice();
+    } catch (error) {
+        if (!cmdCharacteristic) {
+            setConnectionStatus('接続先を選択できませんでした。接続ボタンからやり直してください。', 'red');
+            if (autoReconnectWanted) scheduleReconnect();
+        }
+        return false;
+    } finally {
+        devicePickerBusy = false;
+        updateConnectionButtons();
+    }
+}
+
+function handlePageVisibilityChange() {
+    if (!pageIsActive()) {
+        clearReconnectTimer();
+        if (connectionAttempt) invalidateBleSession(true);
+        if (autoReconnectWanted && !cmdCharacteristic)
+            setConnectionStatus('再接続待機中（画面に戻ると再試行）', '#b56a00');
+    } else if (autoReconnectWanted && bleDevice && (!bleDevice.gatt.connected || !cmdCharacteristic)) {
+        reconnectKnownDevice();
+    }
+}
+
+document.getElementById('connectBtn').addEventListener('click', () => selectAndConnectDevice());
+document.getElementById('chooseDeviceBtn').addEventListener('click', () => selectAndConnectDevice(true));
+document.addEventListener('visibilitychange', handlePageVisibilityChange);
+
+function readNumber(parts, index) {
+    if (typeof parts[index] !== 'string' || parts[index].trim() === '') return null;
+    const value = Number(parts[index]);
+    return Number.isFinite(value) ? value : null;
+}
+
+function formatSeconds(value) {
+    if (!Number.isFinite(value) || value < 0) return '--';
+    const seconds = Math.floor(value);
+    return `${Math.floor(seconds / 60)}分 ${seconds % 60}秒`;
+}
+
+function showSensor(tempId, statusId, value, healthy, communicationLost) {
+    document.getElementById(tempId).innerText = healthy ? value.toFixed(1) : '--';
+    const statusEl = document.getElementById(statusId);
+    statusEl.innerText = communicationLost ? '通信途絶' : healthy ? '正常' : '取得不可・復旧確認中';
+    statusEl.style.color = communicationLost ? 'red' : healthy ? 'green' : '#b56a00';
+}
 
 function handleStatusUpdate(event) {
     const parts = new TextDecoder().decode(event.target.value).split(',');
 
-    if (parts[0] === 'ACK') {
-        alert("ヒーターがコマンドを受信しました"); 
+    if (parts[0] === 'ACK' || parts[0] === 'ERR') {
+        const echoedCommand = parts.slice(1).join(',');
+        const request = pendingCommand;
+        // 旧ファームウェアは命令種別を除いた値だけを返す。待機は常に1件に限定する。
+        const matches = request && request.writeStarted && (echoedCommand === request.command ||
+            echoedCommand === request.command.slice(2) || echoedCommand === '');
+        if (!matches) return;
+        const accepted = parts[0] === 'ACK';
+        if (!accepted && request.command.startsWith('S,')) isSettingsDirty = true;
+        finishPendingCommand(accepted);
+        setCommandFeedback(accepted ? 'ESP32が指令を受け付けました。' :
+            'ESP32が指令を受け付けませんでした。設定値とセンサー状態を確認してください。', !accepted);
         return;
     }
     
     if (parts[0] === 'R' && parts.length >= 10) {
-        let dataAge = 0;
-        if (parts.length >= 11) dataAge = parseInt(parts[10]);
-        
-        let statusEl = document.getElementById('espnowStatus');
-        if (dataAge > 90) {
-            if(statusEl) { statusEl.innerText = "途絶 (断線・エラー)"; statusEl.style.color = "red"; }
-            document.getElementById('rTemp').innerText = "エラー";
-            document.getElementById('dTemp').innerText = "エラー";
-            document.getElementById('dataAge').innerText = dataAge + " (通信途絶)";
-            document.getElementById('dataAge').style.color = "red";
+        const rawAge = readNumber(parts, 10);
+        const dataAge = rawAge !== null && rawAge >= 0 ? Math.floor(rawAge) : null;
+        const communicationLost = dataAge !== null && dataAge >= 180;
+        const roomTemp = readNumber(parts, 1);
+        const ductTemp = readNumber(parts, 2);
+        // 旧ファームウェアの通知にはセンサー別の正常フラグがない。
+        const roomHealthy = !communicationLost && roomTemp !== null &&
+            (parts.length <= 11 || readNumber(parts, 11) === 1);
+        const ductHealthy = !communicationLost && ductTemp !== null &&
+            (parts.length <= 12 || readNumber(parts, 12) === 1);
+        const statusEl = document.getElementById('espnowStatus');
+        if (communicationLost) {
+            statusEl.innerText = '途絶（3分以上受信なし）';
+            statusEl.style.color = 'red';
+        } else if (!roomHealthy || !ductHealthy) {
+            statusEl.innerText = '受信中・センサー異常あり';
+            statusEl.style.color = '#b56a00';
+        } else if (dataAge === null) {
+            statusEl.innerText = '受信中（更新経過不明）';
+            statusEl.style.color = '#b56a00';
         } else {
-            if(statusEl) { statusEl.innerText = "正常 (通信中)"; statusEl.style.color = "green"; }
-            document.getElementById('rTemp').innerText = parseFloat(parts[1]).toFixed(1);
-            document.getElementById('dTemp').innerText = parseFloat(parts[2]).toFixed(1);
-            document.getElementById('dataAge').innerText = dataAge;
-            document.getElementById('dataAge').style.color = "#555";
+            statusEl.innerText = '正常（通信中）';
+            statusEl.style.color = 'green';
         }
+        showSensor('rTemp', 'roomSensorStatus', roomTemp, roomHealthy, communicationLost);
+        showSensor('dTemp', 'ductSensorStatus', ductTemp, ductHealthy, communicationLost);
+        document.getElementById('dataAge').innerText = dataAge === null ? '--' :
+            communicationLost ? `${dataAge} (通信途絶)` : dataAge;
+        document.getElementById('dataAge').style.color = communicationLost ? 'red' : '#555';
 
-        document.getElementById('autoState').innerText = parts[3] === '1' ? "有効（稼働中）" : "無効（停止中）";
-        
-        const remSec = parseInt(parts[5]);
-        document.getElementById('remainTime').innerText = parts[3] === '1' ? `${Math.floor(remSec/60)}分 ${remSec%60}秒` : "--";
-        
-        const states = ["停止中(OFF)", "点火確認中", "運転中(ON)"];
-        document.getElementById('heaterState').innerText = states[parseInt(parts[4])] || "不明";
-        
+        document.getElementById('autoState').innerText = parts[3] === '1' ? '有効（稼働中）' :
+            parts[3] === '0' ? '無効' : '不明';
+        document.getElementById('remainTime').innerText = parts[3] === '1' ? formatSeconds(readNumber(parts, 5)) : '--';
+
+        const states = ['停止中(OFF)', '点火確認中', '運転中(ON)', '点火未確認'];
+        document.getElementById('heaterState').innerText = states[readNumber(parts, 4)] || '不明';
+
+        const modes = ['通常制御', '室温の代わりにダクト温度で判定（最大30分運転）',
+            '室温で制御・ダクト温度なし', 'センサー異常・通信断による停止'];
+        document.getElementById('controlMode').innerText = modes[readNumber(parts, 13)] || '詳細情報なし';
+        document.getElementById('fallbackRemain').innerText = formatSeconds(readNumber(parts, 14));
+        const attempts = readNumber(parts, 15);
+        document.getElementById('ignitionAttempts').innerText = Number.isInteger(attempts) && attempts >= 0 ? `${attempts} / 3回` : '--';
+        const stopReasons = ['なし', '手動で停止', '予約時間が終了', '両センサーの温度を取得できないため停止',
+            '子機から3分間受信できないため停止', '3回のON送信後も点火を確認できないため停止',
+            '室温を取得できない状態で30分経過したため停止', '室温がOFF設定温度に達したため停止'];
+        document.getElementById('stopReason').innerText = stopReasons[readNumber(parts, 16)] || '--';
+        const cooldown = readNumber(parts, 17);
+        document.getElementById('cooldownRemain').innerText = cooldown === 0 ? '待機なし' : formatSeconds(cooldown);
+
         if (!isSettingsDirty) {
-             document.getElementById('setDur').value = parts[6];
-             updateFromMin(parts[6]);
-             document.getElementById('setOn').value = parseFloat(parts[7]).toFixed(1);
-             document.getElementById('setOff').value = parseFloat(parts[8]).toFixed(1);
-             document.getElementById('setDuct').value = parseFloat(parts[9]).toFixed(1);
+            const duration = readNumber(parts, 6);
+            if (Number.isInteger(duration) && duration > 0) {
+                document.getElementById('setDur').value = duration;
+                updateFromMin(duration);
+            }
+            [[7, 'setOn'], [8, 'setOff'], [9, 'setDuct']].forEach(([index, id]) => {
+                const value = readNumber(parts, index);
+                if (value !== null) document.getElementById(id).value = value.toFixed(1);
+            });
         }
     }
 }
 
 async function sendCommand(cmd) {
-    if (!cmdCharacteristic) return alert("ESP32と接続されていません。");
-    await cmdCharacteristic.writeValue(new TextEncoder().encode(cmd));
+    const isStop = cmd === 'B,1' || cmd === 'A,0' || cmd === 'B,STOP';
+    if (isStop) cancelAutoStart();
+    if (!cmdCharacteristic || !bleDevice?.gatt.connected) {
+        setCommandFeedback('ESP32と接続されていません。', true);
+        return false;
+    }
+    if (pendingCommand) {
+        if (!isStop) {
+            setCommandFeedback('前の操作の応答を待っています。しばらく待ってから操作してください。', true);
+            return false;
+        }
+        if (pendingCommand.command === cmd) return pendingCommand.response;
+        // 停止指令は応答待ちを中断できる。実際のBLE書込みは下のキューで直列化する。
+        finishPendingCommand(false);
+    }
+    const characteristic = cmdCharacteristic;
+    const request = { command: cmd, writeStarted: false };
+    const response = new Promise(resolve => { request.resolve = resolve; });
+    request.response = response;
+    pendingCommand = request;
+    setCommandFeedback('ESP32の応答を確認しています。');
+    const writeOperation = gattWriteQueue.then(async () => {
+        if (pendingCommand !== request) return;
+        if (!bleDevice?.gatt.connected || cmdCharacteristic !== characteristic) throw new Error('BLE未接続');
+        request.writeStarted = true;
+        request.timeout = setTimeout(() => {
+            if (pendingCommand !== request) return;
+            finishPendingCommand(false);
+            setCommandFeedback('ESP32から応答がありません。操作結果を確認してください。', true);
+        }, COMMAND_RESPONSE_TIMEOUT_MS);
+        await characteristic.writeValue(new TextEncoder().encode(cmd));
+    });
+    gattWriteQueue = writeOperation.catch(e => {
+        if (pendingCommand !== request) return;
+        finishPendingCommand(false);
+        setCommandFeedback('コマンドを送信できませんでした。設定・操作結果を確認してください。 ' + e.message, true);
+    });
+    return await response;
 }
 
 async function saveSettings() {
-    const dur = document.getElementById('setDur').value || 60;
-    const onT = document.getElementById('setOn').value || 10.0;
-    const offT = document.getElementById('setOff').value || 15.0;
-    const ductT = document.getElementById('setDuct').value || 5.0;
-    await sendCommand(`S,${dur},${onT},${offT},${ductT}`);
-    setTimeout(() => { isSettingsDirty = false; }, 2000);
+    const ids = ['setDur', 'setOn', 'setOff', 'setDuct'];
+    const values = ids.map(id => document.getElementById(id).value);
+    const [dur, onT, offT, ductT] = values.map(value => value.trim() === '' ? NaN : Number(value));
+    if (!Number.isInteger(dur) || dur <= 0 || dur > 71582 || ![onT, offT, ductT].every(Number.isFinite) || onT >= offT || ductT <= 0) {
+        setCommandFeedback('設定を確認してください。時間は1～71582分の整数、ON温度はOFF温度未満、点火判定温度上昇値は正の数にしてください。', true);
+        return false;
+    }
+    if (!await sendCommand(`S,${dur},${onT},${offT},${ductT}`)) return false;
+    // 送信中に編集された設定は、次の通知で上書きしない。
+    if (ids.every((id, index) => document.getElementById(id).value === values[index])) isSettingsDirty = false;
+    return true;
 }
 </script>
 </body>
