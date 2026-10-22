@@ -21,10 +21,59 @@ const uint8_t SENDER_MAC[] = {0xEC, 0x61, 0x60, 0x93, 0xf8, 0x14};
 
 #define SERVICE_UUID     "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHAR_STATUS_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+#define CHAR_HISTORY_UUID "e93c15d4-f791-4bb1-9daf-88ae6f946be1"
 #define CHAR_CMD_UUID    "8c772be5-e0d0-4251-bb5c-1f6874eb7310"
 BLEServer* pServer = nullptr;
 BLECharacteristic* pStatusChar = nullptr;
+BLECharacteristic* pHistoryChar = nullptr;
 std::atomic<bool> deviceConnected{false};
+extern ffheater::Controller controller;
+struct HistoryPoint { uint32_t at; int16_t room, duct; };
+HistoryPoint history[61], snapshot[61];
+uint8_t historyHead = 0, historyCount = 0, snapshotCount = 0, snapshotIndex = 0;
+uint16_t snapshotId = 0;
+uint32_t snapshotAt = 0, lastHistoryAt = 0, lastHistorySend = 0;
+bool historyStarted = false, historySending = false;
+constexpr int16_t HISTORY_MISSING = INT16_MIN;
+int16_t historyValue(float value, bool valid) {
+    if (!valid || !std::isfinite(value) || value < -3276.7f || value > 3276.7f) return HISTORY_MISSING;
+    return static_cast<int16_t>(std::lround(value * 10));
+}
+void sampleHistory(uint32_t now) {
+    if (historyStarted && now - lastHistoryAt < 60000UL) return;
+    historyStarted = true; lastHistoryAt = now;
+    history[historyHead] = {now, historyValue(controller.room.temperature, controller.roomValid(now)),
+        historyValue(controller.duct.temperature, controller.ductValid(now))};
+    historyHead = (historyHead + 1) % 61;
+    if (historyCount < 61) ++historyCount;
+}
+void beginHistory(uint32_t now) {
+    snapshotAt = now; snapshotCount = 0; snapshotIndex = 0; ++snapshotId;
+    for (uint8_t i = 0; i < historyCount; ++i) {
+        const auto &point = history[(historyHead + 61 - historyCount + i) % 61];
+        if (now - point.at <= 3600000UL) snapshot[snapshotCount++] = point;
+    }
+    historySending = true; lastHistorySend = now - 100;
+}
+void sendHistory(uint32_t now) {
+    if (!deviceConnected.load()) { historySending = false; return; }
+    if (!historySending || now - lastHistorySend < 100) return;
+    lastHistorySend = now;
+    // Fixed 12-byte little-endian frame, within the default BLE MTU.
+    uint8_t frame[12] = {1, uint8_t(snapshotId), uint8_t(snapshotId >> 8), snapshotIndex, snapshotCount};
+    uint16_t age = 0; int16_t room = HISTORY_MISSING, duct = HISTORY_MISSING;
+    if (snapshotIndex < snapshotCount) {
+        const auto &point = snapshot[snapshotIndex];
+        age = uint16_t((snapshotAt - point.at) / 1000); room = point.room; duct = point.duct;
+    }
+    frame[5] = uint8_t(age); frame[6] = uint8_t(age >> 8);
+    frame[7] = uint8_t(room); frame[8] = uint8_t(uint16_t(room) >> 8);
+    frame[9] = uint8_t(duct); frame[10] = uint8_t(uint16_t(duct) >> 8);
+    frame[11] = 0;
+    pHistoryChar->setValue(frame, sizeof(frame)); pHistoryChar->notify();
+    if (snapshotCount == 0 || ++snapshotIndex >= snapshotCount) historySending = false;
+}
+
 bool oldDeviceConnected = false;
 
 #ifdef TARGET_ESP32_S3
@@ -157,7 +206,9 @@ void handleCommands(uint32_t now, ffheater::Command& effect) {
     while (xQueueReceive(commandQueue, &received, 0) == pdTRUE) {
         const String value(received.text);
         bool accepted = true;
-        if (value == "A,0" || value == "B,1" || value == "B,STOP") {
+        if (value == "H,1") {
+            beginHistory(now);
+        } else if (value == "A,0" || value == "B,1" || value == "B,STOP") {
             mergeEffect(controller.stopByUser(now), effect);
         } else if (value == "A,1") {
             // A fault/stop and an already queued start must not cancel out.
@@ -276,6 +327,8 @@ void setup() {
     pStatusChar = service->createCharacteristic(CHAR_STATUS_UUID,
         BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
     pStatusChar->addDescriptor(new BLE2902());
+    pHistoryChar = service->createCharacteristic(CHAR_HISTORY_UUID, BLECharacteristic::PROPERTY_NOTIFY);
+    pHistoryChar->addDescriptor(new BLE2902());
     BLECharacteristic* command = service->createCharacteristic(CHAR_CMD_UUID,
         BLECharacteristic::PROPERTY_WRITE);
     command->setCallbacks(new MyCallbacks());
@@ -313,6 +366,8 @@ void loop() {
         persistedCooldown = cooldown;
     }
     updateLedPattern();
+    sampleHistory(now);
     handleBLENotify(now);
+    sendHistory(now);
     delay(1);
 }

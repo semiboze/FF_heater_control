@@ -49,6 +49,13 @@
 </div>
 
 <div class="card">
+    <h3>過去60分の温度</h3>
+    <p><span style="color:#1671cf">● 室温（左軸）</span>　<span style="color:#d15036">● ダクト温度（右軸）</span></p>
+    <canvas id="historyChart" style="width:100%;height:240px" aria-label="過去60分の室温とダクト温度のグラフ"></canvas>
+    <p id="historyStatus" role="status">接続後に履歴を取得します。</p>
+    <button class="btn" id="historyRefresh" onclick="requestHistory()">履歴を更新</button>
+</div>
+<div class="card">
     <h3>手動リモコン操作</h3>
     <div class="flex" style="margin-bottom: 10px;">
         <button class="btn" onclick="sendCommand('B,0')">電源ON</button>
@@ -110,7 +117,66 @@
 </div>
 
 <script>
+let lastAgeReading = null, lastAgeAt = 0;
+setInterval(() => {
+    if (lastAgeReading === null || !cmdCharacteristic) return;
+    const age = lastAgeReading + Math.floor((Date.now() - lastAgeAt) / 1000);
+    const el = document.getElementById('dataAge');
+    el.innerText = age >= 150 ? `${age} (通信途絶)` : String(age);
+    el.style.color = age >= 150 ? 'red' : '#555';
+}, 1000);
 let isSettingsDirty = false;
+const CHAR_HISTORY_UUID = 'e93c15d4-f791-4bb1-9daf-88ae6f946be1';
+let historyCharacteristic = null, historyHandler = null, historyTimer = null, historyTimeout = null;
+let historyIncoming = null, historyPoints = [], historyRequestAt = 0, historyBusy = false;
+function historyMessage(text) { document.getElementById('historyStatus').textContent = text; }
+function clearHistoryConnection() {
+    if (historyCharacteristic && historyHandler) historyCharacteristic.removeEventListener('characteristicvaluechanged', historyHandler);
+    historyCharacteristic = null; historyHandler = null; clearInterval(historyTimer); clearTimeout(historyTimeout);
+    historyIncoming = null; historyBusy = false;
+    historyMessage('切断中。表示は最後に取得した履歴です。');
+}
+function receiveHistory(event) {
+    const v = event.target.value;
+    if (v.byteLength !== 12 || v.getUint8(0) !== 1 || v.getUint8(11) !== 0) return;
+    const id = v.getUint16(1, true), index = v.getUint8(3), count = v.getUint8(4);
+    if (count > 61 || (count ? index >= count : index !== 0) || !historyBusy) return;
+    if (!historyIncoming) historyIncoming = {id, count, points: new Array(count), received: 0};
+    const h = historyIncoming;
+    if (id !== h.id || count !== h.count) return;
+    if (count && !h.points[index]) {
+        const age = v.getUint16(5, true), a = v.getInt16(7, true), b = v.getInt16(9, true);
+        if (age > 3600) return;
+        h.points[index] = {age, room: a === -32768 ? null : a / 10, duct: b === -32768 ? null : b / 10};
+        h.received++;
+    }
+    if (h.received === count) {
+        clearTimeout(historyTimeout); historyPoints = h.points; historyIncoming = null; historyBusy = false;
+        historyMessage(count ? `${count}件を取得しました。欠測部分は線をつなぎません。` : '履歴はまだありません。');
+        drawHistory();
+    }
+}
+async function requestHistory() {
+    if (!historyCharacteristic || !cmdCharacteristic || historyBusy) return;
+    historyBusy = true; historyIncoming = null; historyRequestAt = Date.now();
+    historyMessage('履歴を取得中…');
+    historyTimeout = setTimeout(() => { historyBusy = false; historyIncoming = null; historyMessage('履歴を完全に受信できませんでした。更新ボタンで再試行してください。'); }, 15000);
+    if (!await sendCommand('H,1')) { clearTimeout(historyTimeout); historyBusy = false; historyMessage('履歴を要求できませんでした。更新ボタンで再試行してください。'); }
+}
+function drawHistory() {
+    const canvas = document.getElementById('historyChart'), ctx = canvas.getContext('2d');
+    const width = Math.max(300, canvas.clientWidth), height = 240, dpr = window.devicePixelRatio || 1;
+    canvas.width = width*dpr; canvas.height = height*dpr; ctx.scale(dpr,dpr);
+    const left=45, right=width-45, top=15, bottom=height-35;
+    ctx.font='11px sans-serif'; ctx.strokeStyle='#ddd'; ctx.fillStyle='#555';
+    const range = key => { const vals=historyPoints.map(p=>p[key]).filter(Number.isFinite); if (!vals.length) return [0, 10]; let lo=Math.floor(Math.min(...vals)/5)*5, hi=Math.ceil(Math.max(...vals)/5)*5; if(lo===hi){lo-=5;hi+=5;} return [lo,hi]; };
+    const room=range('room'), duct=range('duct');
+    for(let i=0;i<=4;i++){const y=bottom-(bottom-top)*i/4;ctx.beginPath();ctx.moveTo(left,y);ctx.lineTo(right,y);ctx.stroke();ctx.fillStyle='#1671cf';ctx.textAlign='right';ctx.fillText((room[0]+(room[1]-room[0])*i/4).toFixed(1),left-4,y+4);ctx.fillStyle='#d15036';ctx.textAlign='left';ctx.fillText((duct[0]+(duct[1]-duct[0])*i/4).toFixed(1),right+4,y+4);}
+    ctx.fillStyle='#555';ctx.textAlign='center'; for(let i=0;i<=4;i++) ctx.fillText(`${60-i*15}分前`,left+(right-left)*i/4,bottom+20);
+    for(const [key,range,color] of [['room',room,'#1671cf'],['duct',duct,'#d15036']]) {ctx.strokeStyle=color;ctx.lineWidth=2;ctx.beginPath();let drawing=false;for(const p of historyPoints){if(p[key]===null){drawing=false;continue;} const age=p.age+(Date.now()-historyRequestAt)/1000;if(age>3600){drawing=false;continue;} const x=right-(right-left)*age/3600, y=bottom-(bottom-top)*(p[key]-range[0])/(range[1]-range[0]);if(drawing)ctx.lineTo(x,y);else ctx.moveTo(x,y);drawing=true;ctx.fillStyle=color;ctx.fillRect(x-2,y-2,4,4);}ctx.stroke();}
+}
+window.addEventListener('resize', drawHistory);
+
 
 document.addEventListener('input', (e) => {
     if (e.target.tagName === 'INPUT') isSettingsDirty = true;
@@ -305,6 +371,8 @@ function invalidateBleSession(disconnectDevice = false) {
         attempt.cancel(new Error('接続処理を中断しました。'));
     }
     removeStatusListener();
+    clearHistoryConnection();
+    lastAgeReading = null;
     cmdCharacteristic = null;
     clearLiveStatus();
     if (disconnectDevice && bleDevice?.gatt) {
@@ -377,6 +445,15 @@ function reconnectKnownDevice() {
         ensureCurrent();
         if (!device.gatt.connected) throw new Error('接続が切れました。');
         cmdCharacteristic = command;
+        try {
+            const history = await service.getCharacteristic(CHAR_HISTORY_UUID);
+            ensureCurrent(); historyCharacteristic = history;
+            historyHandler = e => { if (connectionGeneration === attempt.generation && historyCharacteristic === history) receiveHistory(e); };
+            history.addEventListener('characteristicvaluechanged', historyHandler);
+            await history.startNotifications(); ensureCurrent();
+            setTimeout(() => { if (historyCharacteristic === history) requestHistory(); }, 500);
+            historyTimer = setInterval(() => { if (pageIsActive()) requestHistory(); }, 60000);
+        } catch (error) { historyMessage('この親機から履歴を取得できません: ' + error.message); }
         reconnectAttempt = 0;
         setConnectionStatus('接続完了 (通信中)', 'blue');
         setControlsEnabled(true);
@@ -490,7 +567,8 @@ function handleStatusUpdate(event) {
     if (parts[0] === 'R' && parts.length >= 10) {
         const rawAge = readNumber(parts, 10);
         const dataAge = rawAge !== null && rawAge >= 0 ? Math.floor(rawAge) : null;
-        const communicationLost = dataAge !== null && dataAge >= 180;
+        lastAgeReading = dataAge; lastAgeAt = Date.now();
+        const communicationLost = dataAge !== null && dataAge >= 150;
         const roomTemp = readNumber(parts, 1);
         const ductTemp = readNumber(parts, 2);
         // 旧ファームウェアの通知にはセンサー別の正常フラグがない。
@@ -500,7 +578,7 @@ function handleStatusUpdate(event) {
             (parts.length <= 12 || readNumber(parts, 12) === 1);
         const statusEl = document.getElementById('espnowStatus');
         if (communicationLost) {
-            statusEl.innerText = '途絶（3分以上受信なし）';
+            statusEl.innerText = '途絶（150秒以上受信なし）';
             statusEl.style.color = 'red';
         } else if (!roomHealthy || !ductHealthy) {
             statusEl.innerText = '受信中・センサー異常あり';
