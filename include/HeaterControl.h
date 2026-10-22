@@ -5,7 +5,7 @@
 
 namespace ffheater {
 
-constexpr uint32_t COMM_TIMEOUT_MS = 180000UL;
+constexpr uint32_t COMM_TIMEOUT_MS = 150000UL;
 constexpr uint32_t COOLDOWN_MS = 600000UL;
 constexpr uint32_t ROOM_FALLBACK_MS = 1800000UL;
 constexpr uint32_t IGNITION_INTERVAL_MS = 300000UL;
