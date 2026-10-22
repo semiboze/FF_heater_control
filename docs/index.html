@@ -11,6 +11,7 @@
         .status-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
         .html-version { font-size: 11px; font-weight: normal; color: #555; white-space: nowrap; }
         .btn { display: inline-block; padding: 12px 15px; background: #007bff; color: #fff; border: none; border-radius: 4px; cursor: pointer; text-decoration: none; text-align: center; margin: 5px 0; box-sizing: border-box; font-size: 16px; width: 100%; box-shadow: 0 4px #0056b3; }
+        .btn[hidden] { display: none; }
         .btn:active { box-shadow: none; transform: translateY(4px); }
         .btn:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
         .btn-danger { background: #dc3545; box-shadow: 0 4px #a71d2a; }
@@ -25,18 +26,27 @@
 </head>
 <body>
 
+<div class="flex" style="gap:10px;">
 <button id="connectBtn" class="btn" style="background:#17a2b8; box-shadow:0 4px #117a8b;">ESP32に接続 (BLE)</button>
 <button id="chooseDeviceBtn" class="btn" style="background:#6c757d; box-shadow:0 4px #5a6268;" hidden>接続先を選び直す</button>
+</div>
 <p style="text-align:center; font-weight:bold;">ステータス: <span id="statusTxt">未接続</span></p>
-<p style="font-size:0.85em; color:#555;">一度接続した後は、この画面を開いている間、切断時に2〜10秒間隔で自動再接続します。画面の再読み込み・アプリ終了後は、最初の接続操作が必要です。</p>
 <p id="commandFeedback" role="status" aria-live="polite" style="font-size:0.9em;"></p>
 
 <div class="card">
-    <h3 class="status-heading"><span>現在のステータス</span><small id="htmlVersion" class="html-version">HTML v20261016-ble2</small></h3>
+    <h3 class="status-heading"><span>現在のステータス</span><small id="htmlVersion" class="html-version">HTML v20261022-history3</small></h3>
     <p>通信状態: <span id="espnowStatus" style="font-weight:bold; color:orange;">不明（BLE未接続）</span></p>
-    <p>室内温度 (Port 13): <strong><span id="rTemp">--</span> ℃</strong><br><small id="roomSensorStatus">取得状態不明</small></p>
-    <p>ダクト温度 (Port 14): <strong><span id="dTemp">--</span> ℃</strong><br><small id="ductSensorStatus">取得状態不明</small></p>
-    <p style="font-size: 0.9em; color: #555;">センサー最終更新: <strong><span id="dataAge">--</span> 秒前</strong></p>
+    <section aria-label="温度履歴">
+        <h3>過去60分の温度</h3>
+        <div style="display:flex; flex-wrap:wrap; gap:8px 18px; font-size:0.9em;">
+            <span style="color:#1671cf">● 室温（左軸） <strong><span id="rTemp">--</span> ℃</strong> <small id="roomSensorStatus">取得状態不明</small></span>
+            <span style="color:#d15036">● ダクト温度（右軸） <strong><span id="dTemp">--</span> ℃</strong> <small id="ductSensorStatus">取得状態不明</small></span>
+        </div>
+        <canvas id="historyChart" style="width:100%;height:240px" aria-label="過去60分の室温とダクト温度のグラフ"></canvas>
+        <p id="historyStatus" role="status">接続後に履歴を取得します。</p>
+        <p style="font-size:0.9em;color:#555;">センサー最終更新: <strong><span id="dataAge">--</span> 秒前</strong></p>
+        <button class="btn" id="historyRefresh" onclick="requestHistory()">履歴を更新</button>
+    </section>
     <p>自動制御モード: <strong><span id="autoState">不明（BLE未接続）</span></strong></p>
     <p>残り時間: <strong><span id="remainTime">--</span></strong></p>
     <p>ヒーター状態（推定）: <strong><span id="heaterState">不明（BLE未接続）</span></strong></p>
@@ -48,13 +58,6 @@
     <p style="font-size: 0.85em; color: #555;">取得不能のセンサーは、2回連続で正常に取得できると通常の判定に戻ります。ダクト温度を取得できない間は点火を確認できません。</p>
 </div>
 
-<div class="card">
-    <h3>過去60分の温度</h3>
-    <p><span style="color:#1671cf">● 室温（左軸）</span>　<span style="color:#d15036">● ダクト温度（右軸）</span></p>
-    <canvas id="historyChart" style="width:100%;height:240px" aria-label="過去60分の室温とダクト温度のグラフ"></canvas>
-    <p id="historyStatus" role="status">接続後に履歴を取得します。</p>
-    <button class="btn" id="historyRefresh" onclick="requestHistory()">履歴を更新</button>
-</div>
 <div class="card">
     <h3>手動リモコン操作</h3>
     <div class="flex" style="margin-bottom: 10px;">
