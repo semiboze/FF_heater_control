@@ -103,7 +103,7 @@
     <p>再点火までの待機: <strong><span id="cooldownRemain">--</span></strong></p>
     <p>自動運転の停止理由: <strong><span id="stopReason">--</span></strong></p>
     <p style="font-size: 0.85em; color: #555;">取得不能のセンサーは、2回連続で正常に取得できると通常の判定に戻ります。ダクト温度を取得できない間は点火を確認できません。</p>
-    <details class="version-detail"><summary>画面バージョン</summary><small id="htmlVersion" class="html-version">HTML v20261024-feedback-v11</small></details>
+    <details class="version-detail"><summary>画面バージョン</summary><small id="htmlVersion" class="html-version">HTML v20261024-sensor-save-state-v12</small></details>
 </div>
 
 <div class="card">
@@ -173,10 +173,10 @@
         <h3>センサー設定</h3>
         <div class="sensor-actions" aria-label="センサー設定の送信操作">
             <div class="flex">
-                <button type="button" class="btn" onclick="readSensorSettings()">設定を読み出す</button>
-                <button type="button" class="btn btn-success" onclick="saveSensorSettings()">子機に保存</button>
+                <button type="button" class="btn" id="sensorReadBtn" onclick="readSensorSettings()">設定を読み出す</button>
+                <button type="button" class="btn btn-success" id="sensorSaveBtn" onclick="saveSensorSettings()">子機に保存</button>
             </div>
-            <button type="button" class="btn sensor-reset" onclick="resetSensorSettings()">初期値へ戻す（確認あり）</button>
+            <button type="button" class="btn sensor-reset" id="sensorResetBtn" onclick="resetSensorSettings()">初期値へ戻す（確認あり）</button>
             <p class="sensor-note">受信時刻: <span id="sensorLastAge">--</span> / 設定状態: <span id="sensorConfigStatus">未取得</span></p>
             <p role="status" aria-live="polite" id="sensorConfigFeedback">接続後に「設定を読み出す」を押してください。</p>
         </div>
@@ -255,6 +255,17 @@ let heaterStopped = false;
 let lastSensorRequestType = null;
 let activePanel = 'heater';
 
+// Lock configuration actions while the previous sensor request is in progress.
+// Keep readback and actual SET completion clearly distinguishable.
+function updateSensorActionButtons() {
+    const connected = !!(cmdCharacteristic && bleDevice?.gatt?.connected);
+    document.getElementById('sensorReadBtn').disabled = !connected || sensorRequestPending;
+    document.getElementById('sensorSaveBtn').disabled =
+        !connected || sensorRequestPending || !sensorApplied || !heaterStopped;
+    document.getElementById('sensorResetBtn').disabled =
+        !connected || sensorRequestPending || !sensorApplied || !heaterStopped;
+}
+
 function sensorText(id, value) { document.getElementById(id).textContent = value; }
 function formatTemp(value) { return Number.isFinite(value) ? value.toFixed(1) + '℃' : '--'; }
 function updateSensorPreview() {
@@ -289,18 +300,26 @@ function receiveSensorConfig(event) {
     if (fields[0] !== 'CFG') return;
     if (fields[1] === 'WAIT') {
         sensorRequestPending = true;
-        sensorText('sensorConfigStatus', '子機応答待ち');
-        sensorFeedback('親機が受け付けました。子機の起床・保存完了を待っています。');
+        const task = lastSensorRequestType;
+        sensorText('sensorConfigStatus', task === 'GET' ? '読み出し中' :
+            task === 'SET' ? '保存中' : task === 'RESET' ? '初期化中' : '子機応答待ち');
+        sensorFeedback(task === 'GET' ? '子機の設定値を読み出しています。保存はまだ実行していません。' :
+            task === 'SET' ? '補正値を子機に保存しています。完了通知を待っています。' :
+            task === 'RESET' ? '子機の設定を初期化しています。完了通知を待っています。' :
+            '子機からの応答を待っています。');
+        updateSensorActionButtons();
     } else if (fields[1] === 'FAIL') {
         sensorRequestPending = false;
         lastSensorRequestType = null;
         sensorText('sensorConfigStatus', '確認失敗');
         sensorFeedback('設定結果を確認できません: ' + (fields[3] || '不明') + '。再度読み出して確認してください。');
+        updateSensorActionButtons();
     } else if (fields[1] === 'DONE' && fields.length === 6) {
         const room = Number(fields[3]), duct = Number(fields[4]), sleep = Number(fields[5]);
         if (![room, duct, sleep].every(Number.isInteger) || room < -30 || room > 30 ||
             duct < -30 || duct > 30 || ![15, 30, 34, 60].includes(sleep)) return;
         const oldApplied = sensorApplied;
+        const completedTask = lastSensorRequestType;
         sensorApplied = {room, duct, sleep};
         sensorRequestPending = false;
         // On SET/RESET, the last telemetry sample still used the old offset.
@@ -312,9 +331,14 @@ function receiveSensorConfig(event) {
         if (!sensorDirty) sensorDraft = {...sensorApplied};
         if (sensorDraft.room === room && sensorDraft.duct === duct && sensorDraft.sleep === sleep)
             sensorDirty = false;
-        sensorText('sensorConfigStatus', '子機保存値を確認済み');
-        sensorFeedback('子機から設定値を確認しました。');
+        sensorText('sensorConfigStatus', '子機設定値を確認済み');
+        sensorFeedback(completedTask === 'SET' ?
+            '子機への保存が完了しました。次の測定データ受信後、ヒーター操作画面にも反映されます。' :
+            completedTask === 'RESET' ? '子機の初期設定への復帰が完了しました。' :
+            completedTask === 'GET' ? '子機の現在設定を読み出しました。変更はまだ保存していません。' :
+            '子機から以前の設定結果を取得しました。必要に応じて再度読み出してください。');
         updateSensorPreview();
+        updateSensorActionButtons();
     } else if (fields[1] === 'UNKNOWN') {
         sensorText('sensorConfigStatus', '未取得');
     }
@@ -329,6 +353,7 @@ function clearSensorConfigConnection() {
     sensorText('sensorConfigStatus', 'BLE未接続');
     sensorFeedback('再接続後に設定を読み出してください。');
     updateSensorPreview();
+    updateSensorActionButtons();
 }
 function switchPanel(panel) {
     activePanel = panel === 'sensor' ? 'sensor' : 'heater';
@@ -336,12 +361,18 @@ function switchPanel(panel) {
     document.getElementById('sensorPanel').hidden = activePanel !== 'sensor';
     document.getElementById('heaterTab').setAttribute('aria-selected', String(activePanel === 'heater'));
     document.getElementById('sensorTab').setAttribute('aria-selected', String(activePanel === 'sensor'));
-    if (activePanel === 'sensor' && cmdCharacteristic && !sensorRequestPending && !sensorDirty)
-        readSensorSettings();
+    // Do not silently start a new read on each tab revisit: that used to
+    // block Save and caused a later GET result to look like Save succeeded.
+    if (activePanel === 'sensor' && cmdCharacteristic && !sensorRequestPending &&
+        !sensorDirty && !sensorApplied) readSensorSettings();
+    updateSensorActionButtons();
 }
 async function readSensorSettings() {
     if (!sensorConfigCharacteristic) { sensorFeedback('この親機にセンサー設定用BLE機能がありません。'); return false; }
-    if (sensorRequestPending) return false;
+    if (sensorRequestPending) {
+        sensorFeedback('前の設定要求を処理中です。完了後にもう一度読み出してください。');
+        return false;
+    }
     lastSensorRequestType = 'GET';
     const accepted = await sendCommand('C,GET');
     if (!accepted) { lastSensorRequestType = null; sensorFeedback('読み出し要求が受け付けられませんでした。'); }
@@ -350,7 +381,10 @@ async function readSensorSettings() {
 async function saveSensorSettings() {
     if (!sensorApplied) { sensorFeedback('先に設定を読み出してください。'); return false; }
     if (!heaterStopped) { sensorFeedback('ヒーターを停止してから変更してください。'); return false; }
-    if (sensorRequestPending) { sensorFeedback('前の要求を処理中です。'); return false; }
+    if (sensorRequestPending) {
+        sensorFeedback('前の要求を処理中のため、今回の補正値は保存していません。完了後にもう一度「子機に保存」を押してください。');
+        return false;
+    }
     const {room, duct, sleep} = sensorDraft;
     lastSensorRequestType = 'SET';
     const accepted = await sendCommand('C,SET,' + room + ',' + duct + ',' + sleep);
@@ -618,6 +652,7 @@ function clearLiveStatus() {
     document.getElementById('espnowStatus').style.color = 'orange';
     refreshUnifiedStatus();
     setControlsEnabled(false);
+    updateSensorActionButtons();
 }
 
 window.addEventListener('load', clearLiveStatus);
@@ -780,8 +815,9 @@ function reconnectKnownDevice() {
         reconnectAttempt = 0;
         setConnectionStatus('接続完了 (通信中)', 'blue');
         setControlsEnabled(true);
-        if (activePanel === 'sensor' && sensorConfigCharacteristic && !sensorDirty)
-            setTimeout(() => { if (cmdCharacteristic && !sensorRequestPending) readSensorSettings(); }, 200);
+        updateSensorActionButtons();
+        if (activePanel === 'sensor' && sensorConfigCharacteristic && !sensorDirty && !sensorApplied)
+            setTimeout(() => { if (cmdCharacteristic && !sensorRequestPending && !sensorApplied) readSensorSettings(); }, 200);
         return true;
     })();
     attempt.promise = Promise.race([connect, cancelled]).catch(error => {
@@ -932,6 +968,7 @@ function handleStatusUpdate(event) {
         }
         refreshUnifiedStatus();
         heaterStopped = parts[3] === '0' && parts[4] === '0';
+        updateSensorActionButtons();
         sensorLive = {room: roomHealthy ? roomTemp : null, duct: ductHealthy ? ductTemp : null, age: dataAge};
         updateSensorPreview();
         showSensor('rTemp', 'roomSensorStatus', roomTemp, roomHealthy, communicationLost);
