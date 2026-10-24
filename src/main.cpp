@@ -25,11 +25,12 @@ const uint8_t SENDER_MAC[] = {0xEC, 0x61, 0x60, 0x93, 0xf8, 0x14};
 #define SERVICE_UUID     "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHAR_STATUS_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 #define CHAR_HISTORY_UUID "e93c15d4-f791-4bb1-9daf-88ae6f946be1"
- #define CHAR_SENSOR_CONFIG_UUID "fd0c7757-0e61-45c5-9123-950f6c285c01"
+#define CHAR_SENSOR_CONFIG_UUID "fd0c7757-0e61-45c5-9123-950f6c285c01"
 #define CHAR_CMD_UUID    "8c772be5-e0d0-4251-bb5c-1f6874eb7310"
 BLEServer* pServer = nullptr;
 BLECharacteristic* pStatusChar = nullptr;
 BLECharacteristic* pHistoryChar = nullptr;
+std::atomic<bool> deviceConnected{false};
 BLECharacteristic* pSensorConfigChar = nullptr;
 ffheater::ConfigFrame pendingConfig{};
 bool configPending = false;
@@ -51,7 +52,7 @@ void configFail(const char* reason) {
     configNotify("CFG,FAIL," + String(requestId) + "," + reason);
 }
 
-std::atomic<bool> deviceConnected{false};
+
 extern ffheater::Controller controller;
 struct HistoryPoint { uint32_t at; int16_t room, duct; };
 HistoryPoint history[61], snapshot[61];
