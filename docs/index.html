@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FFヒーター制御 (BLE)</title>
     <style>
-        body { font-family: sans-serif; background: #f0f2f5; color: #333; padding: 10px 10px calc(95px + env(safe-area-inset-bottom)); max-width: 500px; margin: auto; }
+        body { font-family: sans-serif; background: #f0f2f5; color: #333; padding: 10px 10px calc(95px + env(safe-area-inset-bottom)); max-width: 500px; margin: auto; box-sizing: border-box; min-height: 100vh; min-height: 100dvh; }
         [hidden] { display: none !important; }
         .bottom-tabs { position: fixed; z-index: 10; left: 0; right: 0; bottom: 0; max-width: 500px; margin: 0 auto; box-sizing: border-box; display: flex; gap: 5px; background: #fff; padding: 8px 9px calc(8px + env(safe-area-inset-bottom)); border-top: 1px solid #bbb; box-shadow: 0 -2px 8px #0002; }
         .bottom-tabs button { flex: 1; min-width: 0; min-height: 46px; padding: 9px 1px; border: 1px solid #bbb; border-radius: 7px; font-size: 15px; background: #f2f2f2; color: #333; touch-action: manipulation; }
@@ -123,7 +123,7 @@
     <p>再点火までの待機: <strong><span id="cooldownRemain">--</span></strong></p>
     <p>自動運転の停止理由: <strong><span id="stopReason">--</span></strong></p>
     <p style="font-size: 0.85em; color: #555;">取得不能のセンサーは、2回連続で正常に取得できると通常の判定に戻ります。ダクト温度を取得できない間は点火を確認できません。</p>
-    <details class="version-detail"><summary>画面バージョン</summary><small id="htmlVersion" class="html-version">HTML v20261024-four-tabs-v14</small></details>
+    <details class="version-detail"><summary>画面バージョン</summary><small id="htmlVersion" class="html-version">HTML v20261024-footer-fix-v15</small></details>
     </div>
 </section>
 
@@ -380,6 +380,23 @@ function clearSensorConfigConnection() {
     updateSensorPreview();
     updateSensorActionButtons();
 }
+// iOS/WKWebView can anchor a fixed footer to the layout viewport rather
+// than the actually visible portion after the browser chrome changes.
+// Sync the footer with the visual viewport without relying on page length.
+function alignBottomTabs() {
+    const vv = window.visualViewport;
+    const tabs = document.querySelector('.bottom-tabs');
+    if (!vv || !tabs) return; // Standard CSS bottom:0 is the fallback.
+    const offset = window.innerHeight - vv.height - vv.offsetTop;
+    if (Number.isFinite(offset)) tabs.style.bottom = Math.round(offset) + 'px';
+}
+window.addEventListener('resize', alignBottomTabs);
+window.addEventListener('load', alignBottomTabs);
+if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', alignBottomTabs);
+    window.visualViewport.addEventListener('scroll', alignBottomTabs);
+}
+
 function switchPanel(panel) {
     activePanel = ['status', 'manual', 'auto', 'sensor'].includes(panel) ? panel : 'status';
     for (const [name, id] of [['status', 'statusPanel'], ['manual', 'manualPanel'],
@@ -395,6 +412,9 @@ function switchPanel(panel) {
     if (activePanel === 'sensor' && cmdCharacteristic && !sensorRequestPending &&
         !sensorDirty && !sensorApplied) readSensorSettings();
     updateSensorActionButtons();
+    // A short panel must not inherit a long panel's scroll position.
+    window.scrollTo(0, 0);
+    alignBottomTabs();
 }
 async function readSensorSettings() {
     if (!sensorConfigCharacteristic) { sensorFeedback('この親機にセンサー設定用BLE機能がありません。'); return false; }
