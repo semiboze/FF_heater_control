@@ -296,10 +296,10 @@ void both_sensor_failures_disable_auto_even_while_already_off() {
     CHECK(rig.controller.stopReason() == StopReason::BOTH_SENSORS);
 }
 
-void communication_timeout_occurs_at_exactly_three_minutes() {
+void communication_timeout_occurs_at_configured_boundary() {
     Rig rig;
     CHECK(rig.start() == Command::ON);
-    rig.now += 3 * MINUTE - 1;
+    rig.now += ffheater::COMM_TIMEOUT_MS - 1;
     CHECK(rig.tick() == Command::NONE);
     ++rig.now;
     CHECK(rig.tick() == Command::OFF);
@@ -425,7 +425,7 @@ int main() {
         {"recovered duct can confirm without extra ON", recovered_duct_rise_can_confirm_without_fourth_on},
         {"both failures require manual restart", both_sensor_failures_latch_auto_off_until_manual_restart},
         {"both failures disable auto even if already off", both_sensor_failures_disable_auto_even_while_already_off},
-        {"three-minute communication boundary", communication_timeout_occurs_at_exactly_three_minutes},
+        {"configured communication timeout boundary", communication_timeout_occurs_at_configured_boundary},
         {"queued recovery cannot conceal communication gap", queued_recovery_packets_do_not_hide_an_expired_communication_gap},
         {"queued recovery cannot conceal both sensor failure", queued_recovery_cannot_hide_both_sensor_failure},
         {"manual stop acknowledges a pending fault", explicit_manual_stop_acknowledges_a_pending_fault},
