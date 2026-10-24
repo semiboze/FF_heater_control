@@ -205,6 +205,7 @@ let sensorApplied = null, sensorDraft = {room: 0, duct: 0, sleep: 60};
 let sensorDirty = false, sensorRequestPending = false;
 let sensorLive = {room: null, duct: null, age: null};
 let heaterStopped = false;
+let lastSensorRequestType = null;
 let activePanel = 'heater';
 
 function sensorText(id, value) { document.getElementById(id).textContent = value; }
@@ -245,14 +246,22 @@ function receiveSensorConfig(event) {
         sensorFeedback('親機が受け付けました。子機の起床・保存完了を待っています。');
     } else if (fields[1] === 'FAIL') {
         sensorRequestPending = false;
+        lastSensorRequestType = null;
         sensorText('sensorConfigStatus', '確認失敗');
         sensorFeedback('設定結果を確認できません: ' + (fields[3] || '不明') + '。再度読み出して確認してください。');
     } else if (fields[1] === 'DONE' && fields.length === 6) {
         const room = Number(fields[3]), duct = Number(fields[4]), sleep = Number(fields[5]);
         if (![room, duct, sleep].every(Number.isInteger) || room < -30 || room > 30 ||
             duct < -30 || duct > 30 || ![15, 30, 34, 60].includes(sleep)) return;
+        const oldApplied = sensorApplied;
         sensorApplied = {room, duct, sleep};
         sensorRequestPending = false;
+        // On SET/RESET, the last telemetry sample still used the old offset.
+        // Do not show falsely reconstructed raw temperatures until a new sample.
+        if (oldApplied && lastSensorRequestType !== 'GET' &&
+            (oldApplied.room !== room || oldApplied.duct !== duct))
+            sensorLive = {room: null, duct: null, age: null};
+        lastSensorRequestType = null;
         if (!sensorDirty) sensorDraft = {...sensorApplied};
         if (sensorDraft.room === room && sensorDraft.duct === duct && sensorDraft.sleep === sleep)
             sensorDirty = false;
@@ -268,6 +277,7 @@ function clearSensorConfigConnection() {
         sensorConfigCharacteristic.removeEventListener('characteristicvaluechanged', sensorConfigHandler);
     sensorConfigCharacteristic = null; sensorConfigHandler = null;
     sensorRequestPending = false; sensorApplied = null;
+    lastSensorRequestType = null;
     sensorLive = {room: null, duct: null, age: null};
     sensorText('sensorConfigStatus', 'BLE未接続');
     sensorFeedback('再接続後に設定を読み出してください。');
@@ -285,8 +295,9 @@ function switchPanel(panel) {
 async function readSensorSettings() {
     if (!sensorConfigCharacteristic) { sensorFeedback('この親機にセンサー設定用BLE機能がありません。'); return false; }
     if (sensorRequestPending) return false;
+    lastSensorRequestType = 'GET';
     const accepted = await sendCommand('C,GET');
-    if (!accepted) sensorFeedback('読み出し要求が受け付けられませんでした。');
+    if (!accepted) { lastSensorRequestType = null; sensorFeedback('読み出し要求が受け付けられませんでした。'); }
     return accepted;
 }
 async function saveSensorSettings() {
@@ -294,15 +305,22 @@ async function saveSensorSettings() {
     if (!heaterStopped) { sensorFeedback('ヒーターを停止してから変更してください。'); return false; }
     if (sensorRequestPending) { sensorFeedback('前の要求を処理中です。'); return false; }
     const {room, duct, sleep} = sensorDraft;
+    lastSensorRequestType = 'SET';
     const accepted = await sendCommand('C,SET,' + room + ',' + duct + ',' + sleep);
-    if (!accepted) sensorFeedback('保存要求が受け付けられませんでした。');
+    if (!accepted) { lastSensorRequestType = null; sensorFeedback('保存要求が受け付けられませんでした。'); }
     return accepted;
 }
 async function resetSensorSettings() {
     if (!heaterStopped || sensorRequestPending) { sensorFeedback('停止状態・通信状態を確認してください。'); return false; }
     if (!confirm('温度補正0.0℃、Deep Sleep60秒に戻しますか？')) return false;
+    lastSensorRequestType = 'RESET';
     const accepted = await sendCommand('C,RESET');
-    if (!accepted) sensorFeedback('初期化要求が受け付けられませんでした。');
+    if (accepted) {
+        sensorDraft = {room: 0, duct: 0, sleep: 60};
+        sensorDirty = false;
+        updateSensorPreview();
+    }
+    if (!accepted) { lastSensorRequestType = null; sensorFeedback('初期化要求が受け付けられませんでした。'); }
     return accepted;
 }
 
