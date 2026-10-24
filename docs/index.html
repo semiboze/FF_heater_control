@@ -5,7 +5,26 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FFヒーター制御 (BLE)</title>
     <style>
-        body { font-family: sans-serif; background: #f0f2f5; color: #333; padding: 10px; max-width: 500px; margin: auto; }
+        body { font-family: sans-serif; background: #f0f2f5; color: #333; padding: 10px 10px calc(95px + env(safe-area-inset-bottom)); max-width: 500px; margin: auto; }
+        [hidden] { display: none !important; }
+        .bottom-tabs { position: fixed; z-index: 10; left: 0; right: 0; bottom: 0; max-width: 500px; margin: 0 auto; box-sizing: border-box; display: flex; gap: 8px; background: #fff; padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid #bbb; box-shadow: 0 -2px 8px #0002; }
+        .bottom-tabs button { flex: 1; padding: 12px 4px; border: 1px solid #bbb; border-radius: 7px; font-size: 15px; background: #f2f2f2; color: #333; }
+        .bottom-tabs button[aria-selected="true"] { color: #fff; background: #007bff; border-color: #007bff; font-weight: bold; }
+        .sensor-values { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .sensor-value { text-align: center; background: #f4f5f7; padding: 10px 3px; border-radius: 7px; }
+        .sensor-value small { display: block; font-size: 12px; line-height: 1.3; }
+        .sensor-value strong { display: block; font-size: 23px; margin-top: 5px; font-variant-numeric: tabular-nums; }
+        .sensor-adjust-label { text-align: center; margin: 7px auto; white-space: nowrap; }
+        .sensor-adjust-label strong { font-size: 20px; font-variant-numeric: tabular-nums; }
+        .adjust-visual { display: grid; grid-template-columns: 1fr 1fr; border-radius: 6px; overflow: hidden; background: #edf1f5; }
+        .adjust-half { background: #e5ebf5; padding: 8px 12px; }
+        .adjust-half + .adjust-half { background: #e8eef0; border-left: 1px solid #b7bec5; }
+        .adjust-half button { width: 100%; margin: 0; padding: 13px 2px; border-radius: 6px; font-size: 17px; font-weight: bold; background: #fff; border: 1px solid #c4ccd2; touch-action: manipulation; cursor: pointer; }
+        .adjust-half button:disabled { opacity: 0.5; }
+        .sensor-group { padding-bottom: 12px; margin-bottom: 12px; border-bottom: 1px solid #ddd; }
+        .sensor-group h4 { margin: 0 0 10px; }
+        .sensor-note { font-size: 12px; color: #555; }
+
         .card { background: #fff; padding: 15px; margin-bottom: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         h2, h3 { margin-top: 0; }
         .status-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -33,8 +52,9 @@
 <p style="text-align:center; font-weight:bold;">ステータス: <span id="statusTxt">未接続</span></p>
 <p id="commandFeedback" role="status" aria-live="polite" style="font-size:0.9em;"></p>
 
+<main id="heaterPanel">
 <div class="card">
-    <h3 class="status-heading"><span>現在のステータス</span><small id="htmlVersion" class="html-version">HTML v20261022-history3</small></h3>
+    <h3 class="status-heading"><span>現在のステータス</span><small id="htmlVersion" class="html-version">HTML v20261024-sensor-config-v05</small></h3>
     <p>通信状態: <span id="espnowStatus" style="font-weight:bold; color:orange;">不明（BLE未接続）</span></p>
     <section aria-label="温度履歴">
         <h3>過去60分の温度</h3>
@@ -119,6 +139,55 @@
     </div>
 </div>
 
+</main>
+<section id="sensorPanel" hidden aria-label="センサー設定画面">
+    <div class="card">
+        <h3>センサー設定</h3>
+        <p class="sensor-note">補正前は子機の生測定値、補正後は保存前の補正値を反映したプレビューです。測定値は子機の送信時だけ更新されます。</p>
+        <div class="sensor-group">
+            <h4>室内温度</h4>
+            <div class="sensor-values">
+                <div class="sensor-value"><small>補正前の測定温度</small><strong id="sensorRoomRaw">--</strong></div>
+                <div class="sensor-value"><small>補正後の温度</small><strong id="sensorRoomPreview">--</strong></div>
+            </div>
+            <p class="sensor-adjust-label">補正量 <strong id="sensorRoomOffset">0.0℃</strong></p>
+            <div class="adjust-visual">
+                <div class="adjust-half"><button type="button" onclick="stepSensorOffset('room', -1)" aria-label="室内温度補正を0.1度下げる">− 0.1℃</button></div>
+                <div class="adjust-half"><button type="button" onclick="stepSensorOffset('room', 1)" aria-label="室内温度補正を0.1度上げる">＋ 0.1℃</button></div>
+            </div>
+        </div>
+        <div class="sensor-group">
+            <h4>吹出口温度</h4>
+            <div class="sensor-values">
+                <div class="sensor-value"><small>補正前の測定温度</small><strong id="sensorDuctRaw">--</strong></div>
+                <div class="sensor-value"><small>補正後の温度</small><strong id="sensorDuctPreview">--</strong></div>
+            </div>
+            <p class="sensor-adjust-label">補正量 <strong id="sensorDuctOffset">0.0℃</strong></p>
+            <div class="adjust-visual">
+                <div class="adjust-half"><button type="button" onclick="stepSensorOffset('duct', -1)" aria-label="吹出口温度補正を0.1度下げる">− 0.1℃</button></div>
+                <div class="adjust-half"><button type="button" onclick="stepSensorOffset('duct', 1)" aria-label="吹出口温度補正を0.1度上げる">＋ 0.1℃</button></div>
+            </div>
+        </div>
+        <label for="sensorSleep">子機のDeep Sleep時間</label>
+        <select id="sensorSleep" onchange="sensorDraftChanged()">
+            <option value="15">15秒</option><option value="30">30秒</option>
+            <option value="34">34秒</option><option value="60" selected>60秒（初期値）</option>
+        </select>
+        <p class="sensor-note">受信時刻: <span id="sensorLastAge">--</span> / 設定状態: <span id="sensorConfigStatus">未取得</span></p>
+        <p role="status" aria-live="polite" id="sensorConfigFeedback">接続後に「設定を読み出す」を押してください。</p>
+        <div class="flex">
+            <button class="btn" onclick="readSensorSettings()">設定を読み出す</button>
+            <button class="btn btn-success" onclick="saveSensorSettings()">子機に保存</button>
+        </div>
+        <button class="btn" style="background:#6c757d;box-shadow:0 4px #444;" onclick="resetSensorSettings()">初期値へ戻す（確認あり）</button>
+        <p class="sensor-note">設定変更はヒーター停止中のみ可能です。子機がDeep Sleep中の場合、次回起床まで保留されます。応答が確認できない場合は読み出して状態を確認してください。</p>
+    </div>
+</section>
+<nav class="bottom-tabs" aria-label="画面切り替え">
+    <button type="button" id="heaterTab" aria-selected="true" onclick="switchPanel('heater')">ヒーター操作</button>
+    <button type="button" id="sensorTab" aria-selected="false" onclick="switchPanel('sensor')">センサー設定</button>
+</nav>
+
 <script>
 let lastAgeReading = null, lastAgeAt = 0;
 setInterval(() => {
@@ -130,6 +199,113 @@ setInterval(() => {
 }, 1000);
 let isSettingsDirty = false;
 const CHAR_HISTORY_UUID = 'e93c15d4-f791-4bb1-9daf-88ae6f946be1';
+const CHAR_SENSOR_CONFIG_UUID = 'fd0c7757-0e61-45c5-9123-950f6c285c01';
+let sensorConfigCharacteristic = null, sensorConfigHandler = null;
+let sensorApplied = null, sensorDraft = {room: 0, duct: 0, sleep: 60};
+let sensorDirty = false, sensorRequestPending = false;
+let sensorLive = {room: null, duct: null, age: null};
+let heaterStopped = false;
+let activePanel = 'heater';
+
+function sensorText(id, value) { document.getElementById(id).textContent = value; }
+function formatTemp(value) { return Number.isFinite(value) ? value.toFixed(1) + '℃' : '--'; }
+function updateSensorPreview() {
+    for (const key of ['room', 'duct']) {
+        const prefix = key === 'room' ? 'sensorRoom' : 'sensorDuct';
+        const offset = sensorDraft[key] / 10;
+        sensorText(prefix + 'Offset', (offset > 0 ? '+' : '') + offset.toFixed(1) + '℃');
+        const current = sensorLive[key];
+        const raw = sensorApplied && Number.isFinite(current) ? current - sensorApplied[key] / 10 : null;
+        sensorText(prefix + 'Raw', formatTemp(raw));
+        sensorText(prefix + 'Preview', formatTemp(raw === null ? null : raw + offset));
+    }
+    const age = sensorLive.age;
+    sensorText('sensorLastAge', age === null ? '--' : age + '秒前' + (age >= 150 ? '（通信途絶）' : ''));
+    document.getElementById('sensorSleep').value = String(sensorDraft.sleep);
+}
+function sensorDraftChanged() {
+    sensorDraft.sleep = Number(document.getElementById('sensorSleep').value);
+    sensorDirty = true;
+    updateSensorPreview();
+}
+function stepSensorOffset(key, step) {
+    if (!sensorApplied || (key !== 'room' && key !== 'duct') || !Number.isInteger(step) || Math.abs(step) !== 1) return;
+    sensorDraft[key] = Math.max(-30, Math.min(30, sensorDraft[key] + step));
+    sensorDirty = true;
+    updateSensorPreview();
+}
+function sensorFeedback(message) { sensorText('sensorConfigFeedback', message); }
+function receiveSensorConfig(event) {
+    const decoded = new TextDecoder().decode(event.target.value);
+    const fields = decoded.split(',');
+    if (fields[0] !== 'CFG') return;
+    if (fields[1] === 'WAIT') {
+        sensorRequestPending = true;
+        sensorText('sensorConfigStatus', '子機応答待ち');
+        sensorFeedback('親機が受け付けました。子機の起床・保存完了を待っています。');
+    } else if (fields[1] === 'FAIL') {
+        sensorRequestPending = false;
+        sensorText('sensorConfigStatus', '確認失敗');
+        sensorFeedback('設定結果を確認できません: ' + (fields[3] || '不明') + '。再度読み出して確認してください。');
+    } else if (fields[1] === 'DONE' && fields.length === 6) {
+        const room = Number(fields[3]), duct = Number(fields[4]), sleep = Number(fields[5]);
+        if (![room, duct, sleep].every(Number.isInteger) || room < -30 || room > 30 ||
+            duct < -30 || duct > 30 || ![15, 30, 34, 60].includes(sleep)) return;
+        sensorApplied = {room, duct, sleep};
+        sensorRequestPending = false;
+        if (!sensorDirty) sensorDraft = {...sensorApplied};
+        if (sensorDraft.room === room && sensorDraft.duct === duct && sensorDraft.sleep === sleep)
+            sensorDirty = false;
+        sensorText('sensorConfigStatus', '子機保存値を確認済み');
+        sensorFeedback('子機から設定値を確認しました。');
+        updateSensorPreview();
+    } else if (fields[1] === 'UNKNOWN') {
+        sensorText('sensorConfigStatus', '未取得');
+    }
+}
+function clearSensorConfigConnection() {
+    if (sensorConfigCharacteristic && sensorConfigHandler)
+        sensorConfigCharacteristic.removeEventListener('characteristicvaluechanged', sensorConfigHandler);
+    sensorConfigCharacteristic = null; sensorConfigHandler = null;
+    sensorRequestPending = false; sensorApplied = null;
+    sensorLive = {room: null, duct: null, age: null};
+    sensorText('sensorConfigStatus', 'BLE未接続');
+    sensorFeedback('再接続後に設定を読み出してください。');
+    updateSensorPreview();
+}
+function switchPanel(panel) {
+    activePanel = panel === 'sensor' ? 'sensor' : 'heater';
+    document.getElementById('heaterPanel').hidden = activePanel !== 'heater';
+    document.getElementById('sensorPanel').hidden = activePanel !== 'sensor';
+    document.getElementById('heaterTab').setAttribute('aria-selected', String(activePanel === 'heater'));
+    document.getElementById('sensorTab').setAttribute('aria-selected', String(activePanel === 'sensor'));
+    if (activePanel === 'sensor' && cmdCharacteristic && !sensorRequestPending && !sensorDirty)
+        readSensorSettings();
+}
+async function readSensorSettings() {
+    if (!sensorConfigCharacteristic) { sensorFeedback('この親機にセンサー設定用BLE機能がありません。'); return false; }
+    if (sensorRequestPending) return false;
+    const accepted = await sendCommand('C,GET');
+    if (!accepted) sensorFeedback('読み出し要求が受け付けられませんでした。');
+    return accepted;
+}
+async function saveSensorSettings() {
+    if (!sensorApplied) { sensorFeedback('先に設定を読み出してください。'); return false; }
+    if (!heaterStopped) { sensorFeedback('ヒーターを停止してから変更してください。'); return false; }
+    if (sensorRequestPending) { sensorFeedback('前の要求を処理中です。'); return false; }
+    const {room, duct, sleep} = sensorDraft;
+    const accepted = await sendCommand('C,SET,' + room + ',' + duct + ',' + sleep);
+    if (!accepted) sensorFeedback('保存要求が受け付けられませんでした。');
+    return accepted;
+}
+async function resetSensorSettings() {
+    if (!heaterStopped || sensorRequestPending) { sensorFeedback('停止状態・通信状態を確認してください。'); return false; }
+    if (!confirm('温度補正0.0℃、Deep Sleep60秒に戻しますか？')) return false;
+    const accepted = await sendCommand('C,RESET');
+    if (!accepted) sensorFeedback('初期化要求が受け付けられませんでした。');
+    return accepted;
+}
+
 let historyCharacteristic = null, historyHandler = null, historyTimer = null, historyTimeout = null;
 let historyIncoming = null, historyPoints = [], historyRequestAt = 0, historyBusy = false;
 function historyMessage(text) { document.getElementById('historyStatus').textContent = text; }
@@ -375,6 +551,7 @@ function invalidateBleSession(disconnectDevice = false) {
     }
     removeStatusListener();
     clearHistoryConnection();
+    clearSensorConfigConnection();
     lastAgeReading = null;
     cmdCharacteristic = null;
     clearLiveStatus();
@@ -457,9 +634,25 @@ function reconnectKnownDevice() {
             setTimeout(() => { if (historyCharacteristic === history) requestHistory(); }, 500);
             historyTimer = setInterval(() => { if (pageIsActive()) requestHistory(); }, 60000);
         } catch (error) { historyMessage('この親機から履歴を取得できません: ' + error.message); }
+        try {
+            const config = await service.getCharacteristic(CHAR_SENSOR_CONFIG_UUID);
+            ensureCurrent(); sensorConfigCharacteristic = config;
+            sensorConfigHandler = event => {
+                if (connectionGeneration === attempt.generation && sensorConfigCharacteristic === config)
+                    receiveSensorConfig(event);
+            };
+            config.addEventListener('characteristicvaluechanged', sensorConfigHandler);
+            await config.startNotifications(); ensureCurrent();
+            const last = await config.readValue();
+            receiveSensorConfig({target: {value: last}});
+        } catch (error) {
+            sensorFeedback('センサー設定機能を取得できません: ' + error.message);
+        }
         reconnectAttempt = 0;
         setConnectionStatus('接続完了 (通信中)', 'blue');
         setControlsEnabled(true);
+        if (activePanel === 'sensor' && sensorConfigCharacteristic && !sensorDirty)
+            setTimeout(() => { if (cmdCharacteristic && !sensorRequestPending) readSensorSettings(); }, 200);
         return true;
     })();
     attempt.promise = Promise.race([connect, cancelled]).catch(error => {
@@ -593,6 +786,9 @@ function handleStatusUpdate(event) {
             statusEl.innerText = '正常（通信中）';
             statusEl.style.color = 'green';
         }
+        heaterStopped = parts[3] === '0' && parts[4] === '0';
+        sensorLive = {room: roomHealthy ? roomTemp : null, duct: ductHealthy ? ductTemp : null, age: dataAge};
+        updateSensorPreview();
         showSensor('rTemp', 'roomSensorStatus', roomTemp, roomHealthy, communicationLost);
         showSensor('dTemp', 'ductSensorStatus', ductTemp, ductHealthy, communicationLost);
         document.getElementById('dataAge').innerText = dataAge === null ? '--' :
@@ -613,7 +809,7 @@ function handleStatusUpdate(event) {
         const attempts = readNumber(parts, 15);
         document.getElementById('ignitionAttempts').innerText = Number.isInteger(attempts) && attempts >= 0 ? `${attempts} / 3回` : '--';
         const stopReasons = ['なし', '手動で停止', '予約時間が終了', '両センサーの温度を取得できないため停止',
-            '子機から3分間受信できないため停止', '3回のON送信後も点火を確認できないため停止',
+            '子機から150秒間受信できないため停止', '3回のON送信後も点火を確認できないため停止',
             '室温を取得できない状態で30分経過したため停止', '室温がOFF設定温度に達したため停止'];
         document.getElementById('stopReason').innerText = stopReasons[readNumber(parts, 16)] || '--';
         const cooldown = readNumber(parts, 17);
