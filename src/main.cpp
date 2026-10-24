@@ -12,20 +12,45 @@
 #include <freertos/queue.h>
 #include "HeaterControl.h"
 #include "SensorPacket.h"
+#include "SensorConfig.h"
 
 using ffheater::ReceivedSensor;
 struct ReceivedCommand { char text[80]; };
 QueueHandle_t sensorQueue = nullptr;
 QueueHandle_t commandQueue = nullptr;
+struct ConfigResult { ffheater::ConfigFrame frame; uint8_t mac[6]; };
+QueueHandle_t configResultQueue = nullptr;
 const uint8_t SENDER_MAC[] = {0xEC, 0x61, 0x60, 0x93, 0xf8, 0x14};
 
 #define SERVICE_UUID     "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHAR_STATUS_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 #define CHAR_HISTORY_UUID "e93c15d4-f791-4bb1-9daf-88ae6f946be1"
+ #define CHAR_SENSOR_CONFIG_UUID "fd0c7757-0e61-45c5-9123-950f6c285c01"
 #define CHAR_CMD_UUID    "8c772be5-e0d0-4251-bb5c-1f6874eb7310"
 BLEServer* pServer = nullptr;
 BLECharacteristic* pStatusChar = nullptr;
 BLECharacteristic* pHistoryChar = nullptr;
+BLECharacteristic* pSensorConfigChar = nullptr;
+ffheater::ConfigFrame pendingConfig{};
+bool configPending = false;
+uint32_t configCreatedAt = 0;
+uint32_t configNextId = 0;
+uint8_t configTargetMac[6] = {};
+String configMessage = "CFG,UNKNOWN";
+
+void configNotify(const String& message) {
+    configMessage = message;
+    if (!pSensorConfigChar) return;
+    pSensorConfigChar->setValue(message.c_str());
+    if (deviceConnected.load()) pSensorConfigChar->notify();
+}
+
+void configFail(const char* reason) {
+    const uint32_t requestId = pendingConfig.requestId;
+    configPending = false;
+    configNotify("CFG,FAIL," + String(requestId) + "," + reason);
+}
+
 std::atomic<bool> deviceConnected{false};
 extern ffheater::Controller controller;
 struct HistoryPoint { uint32_t at; int16_t room, duct; };
@@ -161,6 +186,17 @@ void updateButtonPulses() {
 }
 
 void OnDataRecv(const uint8_t* mac, const uint8_t* bytes, int len) {
+    if (!mac || !bytes) return;
+    ffheater::ConfigFrame report{};
+    if (ffheater::decodeConfig(bytes, len, report)) {
+        if (report.op == ffheater::CONFIG_REPORT && configResultQueue) {
+            ConfigResult result{};
+            result.frame = report;
+            memcpy(result.mac, mac, sizeof(result.mac));
+            xQueueSend(configResultQueue, &result, 0);
+        }
+        return;
+    }
     if (!sensorQueue) return;
     ReceivedSensor packet{};
     if (!ffheater::decodeSensorPacket(mac, bytes, len, millis(), packet)) return;
@@ -206,7 +242,41 @@ void handleCommands(uint32_t now, ffheater::Command& effect) {
     while (xQueueReceive(commandQueue, &received, 0) == pdTRUE) {
         const String value(received.text);
         bool accepted = true;
-        if (value == "H,1") {
+        if (value == "C,GET" || value == "C,RESET" || value.startsWith("C,SET,")) {
+            accepted = !configPending;
+            if (accepted) {
+                ffheater::ConfigFrame next{};
+                next.op = value == "C,GET" ? ffheater::CONFIG_GET : ffheater::CONFIG_SET;
+                if (value.startsWith("C,SET,")) {
+                    int room = 0, duct = 0, sleep = 0;
+                    char trailing = 0;
+                    const int matched = sscanf(received.text, "C,SET,%d,%d,%d%c",
+                                               &room, &duct, &sleep, &trailing);
+                    accepted = matched == 3 && room >= -30 && room <= 30 &&
+                               duct >= -30 && duct <= 30 && sleep >= 0 && sleep <= 65535;
+                    if (accepted) {
+                        next.roomTenths = static_cast<int16_t>(room);
+                        next.ductTenths = static_cast<int16_t>(duct);
+                        next.sleepSeconds = static_cast<uint16_t>(sleep);
+                        accepted = ffheater::validConfig(next);
+                    }
+                } else if (value == "C,RESET") {
+                    next.roomTenths = 0; next.ductTenths = 0; next.sleepSeconds = 60;
+                }
+                if (accepted && next.op == ffheater::CONFIG_SET &&
+                    (controller.active() || controller.state() != ffheater::HeaterState::OFF))
+                    accepted = false;
+                if (accepted) {
+                    ++configNextId;
+                    if (configNextId == 0) ++configNextId;
+                    next.requestId = configNextId;
+                    pendingConfig = next;
+                    configPending = true;
+                    configCreatedAt = now;
+                    configNotify("CFG,WAIT," + String(next.requestId));
+                }
+            }
+        } else if (value == "H,1") {
             beginHistory(now);
         } else if (value == "A,0" || value == "B,1" || value == "B,STOP") {
             mergeEffect(controller.stopByUser(now), effect);
@@ -290,7 +360,8 @@ void setup() {
     }
     sensorQueue = xQueueCreate(4, sizeof(ReceivedSensor));
     commandQueue = xQueueCreate(8, sizeof(ReceivedCommand));
-    if (!sensorQueue || !commandQueue) {
+    configResultQueue = xQueueCreate(4, sizeof(ConfigResult));
+    if (!sensorQueue || !commandQueue || !configResultQueue) {
         Serial.println("Queue allocation failed; outputs remain OFF");
         while (true) delay(1000);
     }
@@ -329,6 +400,10 @@ void setup() {
     pStatusChar->addDescriptor(new BLE2902());
     pHistoryChar = service->createCharacteristic(CHAR_HISTORY_UUID, BLECharacteristic::PROPERTY_NOTIFY);
     pHistoryChar->addDescriptor(new BLE2902());
+    pSensorConfigChar = service->createCharacteristic(CHAR_SENSOR_CONFIG_UUID,
+        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+    pSensorConfigChar->addDescriptor(new BLE2902());
+    pSensorConfigChar->setValue(configMessage.c_str());
     BLECharacteristic* command = service->createCharacteristic(CHAR_CMD_UUID,
         BLECharacteristic::PROPERTY_WRITE);
     command->setCallbacks(new MyCallbacks());
@@ -350,9 +425,45 @@ void loop() {
             packet.sourceMac[3], packet.sourceMac[4], packet.sourceMac[5],
             packet.data.roomTemp, packet.data.ductTemp);
         controller.receive(packet.data.roomTemp, packet.data.ductTemp, packet.receivedAt);
+        if (configPending && millis() - configCreatedAt < 600000UL) {
+            // Do not change calibration after the heater has begun operating.
+            if (pendingConfig.op == ffheater::CONFIG_SET &&
+                (controller.active() || controller.state() != ffheater::HeaterState::OFF)) {
+                configFail("NOT_OFF");
+            } else {
+                esp_now_peer_info_t peer{};
+                memcpy(peer.peer_addr, packet.sourceMac, 6);
+                peer.channel = 1;
+                peer.ifidx = WIFI_IF_STA;
+                peer.encrypt = false;
+                if (!esp_now_is_peer_exist(packet.sourceMac)) esp_now_add_peer(&peer);
+                const esp_err_t tx = esp_now_send(packet.sourceMac,
+                    reinterpret_cast<const uint8_t*>(&pendingConfig), sizeof(pendingConfig));
+                if (tx == ESP_OK) memcpy(configTargetMac, packet.sourceMac, sizeof(configTargetMac));
+            }
+        }
+    }
+    ConfigResult result{};
+    while (xQueueReceive(configResultQueue, &result, 0) == pdTRUE) {
+        if (!configPending || result.frame.requestId != pendingConfig.requestId ||
+            memcmp(result.mac, configTargetMac, 6) != 0) continue;
+        const auto& c = result.frame;
+        if (c.status == ffheater::CONFIG_OK && ffheater::validConfig(c) &&
+            (pendingConfig.op == ffheater::CONFIG_GET ||
+            (c.roomTenths == pendingConfig.roomTenths &&
+             c.ductTenths == pendingConfig.ductTenths &&
+             c.sleepSeconds == pendingConfig.sleepSeconds))) {
+            configPending = false;
+            configNotify("CFG,DONE," + String(c.requestId) + "," + String(c.roomTenths) +
+                         "," + String(c.ductTenths) + "," + String(c.sleepSeconds));
+        } else {
+            configFail(c.status == ffheater::CONFIG_SAVE_ERROR ? "SAVE" :
+                       c.status == ffheater::CONFIG_BAD_VALUE ? "VALUE" : "MISMATCH");
+        }
     }
 
     const uint32_t now = millis();
+    if (configPending && now - configCreatedAt >= 600000UL) configFail("TIMEOUT");
     ffheater::Command effect = controller.tick(now);
     handleCommands(now, effect);
     mergeEffect(controller.tick(now), effect);
