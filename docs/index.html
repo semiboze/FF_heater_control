@@ -68,15 +68,22 @@
 
 <main id="heaterPanel">
 <div class="card">
-    <h3 class="status-heading"><span>現在のステータス</span><small id="htmlVersion" class="html-version">HTML v20261024-last-sample-v08</small></h3>
+    <h3 class="status-heading"><span>現在のステータス</span><small id="htmlVersion" class="html-version">HTML v20261024-shared-axis-v09</small></h3>
     <p>通信状態: <span id="espnowStatus" style="font-weight:bold; color:orange;">不明（BLE未接続）</span></p>
     <section aria-label="温度履歴">
         <h3 class="history-heading"><span>過去60分の温度</span><span id="lastSampleTime" class="history-sample-time">最終取得 --</span></h3>
         <div style="display:flex; flex-wrap:wrap; gap:8px 18px; font-size:0.9em;">
-            <span style="color:#1671cf">● 室温（左軸） <strong><span id="rTemp">--</span> ℃</strong> <small id="roomSensorStatus">取得状態不明</small></span>
-            <span style="color:#d15036">● ダクト温度（右軸） <strong><span id="dTemp">--</span> ℃</strong> <small id="ductSensorStatus">取得状態不明</small></span>
+            <span style="color:#1671cf">● 室温（<span id="roomAxisLabel">共通軸</span>） <strong><span id="rTemp">--</span> ℃</strong> <small id="roomSensorStatus">取得状態不明</small></span>
+            <span style="color:#d15036">● ダクト温度（<span id="ductAxisLabel">共通軸</span>） <strong><span id="dTemp">--</span> ℃</strong> <small id="ductSensorStatus">取得状態不明</small></span>
         </div>
-        <canvas id="historyChart" style="width:100%;height:240px" aria-label="過去60分の室温とダクト温度のグラフ"></canvas>
+        <div style="display:flex;align-items:center;justify-content:flex-end;gap:7px;margin:7px 0 4px;font-size:0.83em;">
+            <label for="historyScaleMode" style="margin:0;white-space:nowrap;">グラフ縦軸</label>
+            <select id="historyScaleMode" onchange="drawHistory()" style="flex:0 1 auto;max-width:75%;font-size:13px;padding:5px 6px;">
+                <option value="shared" selected>共通（温度差を比較）</option>
+                <option value="independent">独立（各温度の変化を見る）</option>
+            </select>
+        </div>
+        <canvas id="historyChart" style="width:100%;height:240px" aria-label="過去60分の室温とダクト温度のグラフ（共通温度軸）"></canvas>
         <p id="historyStatus" role="status">接続後に履歴を取得します。</p>
         <p style="font-size:0.9em;color:#555;">センサー最終更新: <strong><span id="dataAge">--</span> 秒前</strong></p>
         <button class="btn" id="historyRefresh" onclick="requestHistory()">履歴を更新</button>
@@ -393,14 +400,44 @@ async function requestHistory() {
     historyTimeout = setTimeout(() => { historyBusy = false; historyIncoming = null; historyMessage('履歴を完全に受信できませんでした。更新ボタンで再試行してください。'); }, 15000);
     if (!await sendCommand('H,1')) { clearTimeout(historyTimeout); historyBusy = false; historyMessage('履歴を要求できませんでした。更新ボタンで再試行してください。'); }
 }
+// A shared scale prevents visually exaggerating differences between sensors.
+function historyRanges(points, mode) {
+    const valuesFor = key => points.map(p => p[key]).filter(Number.isFinite);
+    const independentRange = key => {
+        const vals = valuesFor(key);
+        if (!vals.length) return [0, 10];
+        let lo = Math.floor(Math.min(...vals) / 5) * 5;
+        let hi = Math.ceil(Math.max(...vals) / 5) * 5;
+        if (lo === hi) { lo -= 5; hi += 5; }
+        return [lo, hi];
+    };
+    if (mode === 'independent') return {room: independentRange('room'), duct: independentRange('duct')};
+    const values = [...valuesFor('room'), ...valuesFor('duct')];
+    if (!values.length) return {room: [0, 10], duct: [0, 10]};
+    const min = Math.min(...values), max = Math.max(...values);
+    let lo = Math.floor((min - 0.5) * 2) / 2;
+    let hi = Math.ceil((max + 0.5) * 2) / 2;
+    // Keep a 5°C minimum height range to avoid overemphasizing tiny changes.
+    if (hi - lo < 5) {
+        const mid = (lo + hi) / 2;
+        lo = Math.floor((mid - 2.5) * 2) / 2;
+        hi = lo + 5;
+    }
+    return {room: [lo, hi], duct: [lo, hi]};
+}
 function drawHistory() {
     const canvas = document.getElementById('historyChart'), ctx = canvas.getContext('2d');
     const width = Math.max(300, canvas.clientWidth), height = 240, dpr = window.devicePixelRatio || 1;
     canvas.width = width*dpr; canvas.height = height*dpr; ctx.scale(dpr,dpr);
     const left=45, right=width-45, top=15, bottom=height-35;
     ctx.font='11px sans-serif'; ctx.strokeStyle='#ddd'; ctx.fillStyle='#555';
-    const range = key => { const vals=historyPoints.map(p=>p[key]).filter(Number.isFinite); if (!vals.length) return [0, 10]; let lo=Math.floor(Math.min(...vals)/5)*5, hi=Math.ceil(Math.max(...vals)/5)*5; if(lo===hi){lo-=5;hi+=5;} return [lo,hi]; };
-    const room=range('room'), duct=range('duct');
+    const independent = document.getElementById('historyScaleMode').value === 'independent';
+    document.getElementById('roomAxisLabel').textContent = independent ? '左軸' : '共通軸';
+    document.getElementById('ductAxisLabel').textContent = independent ? '右軸' : '共通軸';
+    canvas.setAttribute('aria-label', independent ?
+        '過去60分の室温とダクト温度のグラフ（別々の温度軸。線の高さで温度差を比較できません）' :
+        '過去60分の室温とダクト温度のグラフ（共通温度軸）');
+    const {room, duct} = historyRanges(historyPoints, independent ? 'independent' : 'shared');
     for(let i=0;i<=4;i++){const y=bottom-(bottom-top)*i/4;ctx.beginPath();ctx.moveTo(left,y);ctx.lineTo(right,y);ctx.stroke();ctx.fillStyle='#1671cf';ctx.textAlign='right';ctx.fillText((room[0]+(room[1]-room[0])*i/4).toFixed(1),left-4,y+4);ctx.fillStyle='#d15036';ctx.textAlign='left';ctx.fillText((duct[0]+(duct[1]-duct[0])*i/4).toFixed(1),right+4,y+4);}
     ctx.fillStyle='#555';ctx.textAlign='center'; for(let i=0;i<=4;i++) ctx.fillText(`${60-i*15}分前`,left+(right-left)*i/4,bottom+20);
     for(const [key,range,color] of [['room',room,'#1671cf'],['duct',duct,'#d15036']]) {ctx.strokeStyle=color;ctx.lineWidth=2;ctx.beginPath();let drawing=false;for(const p of historyPoints){if(p[key]===null){drawing=false;continue;} const age=p.age+(Date.now()-historyRequestAt)/1000;if(age>3600){drawing=false;continue;} const x=right-(right-left)*age/3600, y=bottom-(bottom-top)*(p[key]-range[0])/(range[1]-range[0]);if(drawing)ctx.lineTo(x,y);else ctx.moveTo(x,y);drawing=true;ctx.fillStyle=color;ctx.fillRect(x-2,y-2,4,4);}ctx.stroke();}
