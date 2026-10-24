@@ -103,7 +103,7 @@
     <p>再点火までの待機: <strong><span id="cooldownRemain">--</span></strong></p>
     <p>自動運転の停止理由: <strong><span id="stopReason">--</span></strong></p>
     <p style="font-size: 0.85em; color: #555;">取得不能のセンサーは、2回連続で正常に取得できると通常の判定に戻ります。ダクト温度を取得できない間は点火を確認できません。</p>
-    <details class="version-detail"><summary>画面バージョン</summary><small id="htmlVersion" class="html-version">HTML v20261024-sensor-save-state-v12</small></details>
+    <details class="version-detail"><summary>画面バージョン</summary><small id="htmlVersion" class="html-version">HTML v20261024-button-label-v13</small></details>
 </div>
 
 <div class="card">
@@ -113,8 +113,8 @@
         <button class="btn btn-danger" onclick="sendCommand('B,1')">電源OFF</button>
     </div>
     <div class="flex">
-        <button class="btn" onclick="sendCommand('B,2')">温度上げ</button>
-        <button class="btn" onclick="sendCommand('B,3')">温度DOWN</button>
+        <button class="btn" onclick="sendCommand('B,2')">温度↑Up</button>
+        <button class="btn" onclick="sendCommand('B,3')">温度↓Dn</button>
     </div>
 </div>
 
