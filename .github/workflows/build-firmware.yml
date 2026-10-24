@@ -34,7 +34,7 @@ jobs:
           cp .pio/build/esp32dev/firmware.bin flash-files/firmware_0x10000.bin
           cp .pio/build/esp32dev/partitions.bin flash-files/partitions_0x8000.bin
           FW="$HOME/.platformio/packages/framework-arduinoespressif32"
-          BOOTLOADER="$(find "$FW" -type f -name 'bootloader_dio_40m.bin' -print -quit)"
+          BOOTLOADER=".pio/build/esp32dev/bootloader.bin"
           BOOTAPP="$(find "$FW" -type f -name 'boot_app0.bin' -print -quit)"
           test -n "$BOOTLOADER" && test -n "$BOOTAPP"
           cp "$BOOTLOADER" flash-files/bootloader_0x1000.bin
