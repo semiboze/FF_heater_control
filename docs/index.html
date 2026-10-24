@@ -42,7 +42,12 @@
         .card { background: #fff; padding: 15px; margin-bottom: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         h2, h3 { margin-top: 0; }
         .status-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-        .html-version { font-size: 11px; font-weight: normal; color: #555; white-space: nowrap; }
+        .html-version { font-size: 11px; font-weight: normal; color: #555; }
+        .connection-summary { text-align:center; font-size: 15px; margin: 7px 0; line-height: 1.4; }
+        #commandFeedback { margin: 5px 0; line-height: 1.3; }
+        #commandFeedback:empty { display: none; }
+        .version-detail { margin-top: 10px; color: #666; font-size: 11px; }
+        .version-detail summary { cursor:pointer; }
         .btn { display: inline-block; padding: 12px 15px; background: #007bff; color: #fff; border: none; border-radius: 4px; cursor: pointer; text-decoration: none; text-align: center; margin: 5px 0; box-sizing: border-box; font-size: 16px; width: 100%; box-shadow: 0 4px #0056b3; }
         .btn[hidden] { display: none; }
         .btn:active { box-shadow: none; transform: translateY(4px); }
@@ -63,13 +68,14 @@
 <button id="connectBtn" class="btn" style="background:#17a2b8; box-shadow:0 4px #117a8b;">ESP32に接続 (BLE)</button>
 <button id="chooseDeviceBtn" class="btn" style="background:#6c757d; box-shadow:0 4px #5a6268;" hidden>接続先を選び直す</button>
 </div>
-<p style="text-align:center; font-weight:bold;">ステータス: <span id="statusTxt">未接続</span></p>
+<p class="connection-summary">通信状態: <strong id="connectionSummary" role="status">BLE未接続</strong></p>
+<span id="statusTxt" hidden>未接続</span>
+<span id="espnowStatus" hidden>不明（BLE未接続）</span>
 <p id="commandFeedback" role="status" aria-live="polite" style="font-size:0.9em;"></p>
 
 <main id="heaterPanel">
 <div class="card">
-    <h3 class="status-heading"><span>現在のステータス</span><small id="htmlVersion" class="html-version">HTML v20261024-shared-axis-v09</small></h3>
-    <p>通信状態: <span id="espnowStatus" style="font-weight:bold; color:orange;">不明（BLE未接続）</span></p>
+
     <section aria-label="温度履歴">
         <h3 class="history-heading"><span>過去60分の温度</span><span id="lastSampleTime" class="history-sample-time">最終取得 --</span></h3>
         <div style="display:flex; flex-wrap:wrap; gap:8px 18px; font-size:0.9em;">
@@ -97,6 +103,7 @@
     <p>再点火までの待機: <strong><span id="cooldownRemain">--</span></strong></p>
     <p>自動運転の停止理由: <strong><span id="stopReason">--</span></strong></p>
     <p style="font-size: 0.85em; color: #555;">取得不能のセンサーは、2回連続で正常に取得できると通常の判定に戻ります。ダクト温度を取得できない間は点火を確認できません。</p>
+    <details class="version-detail"><summary>画面バージョン</summary><small id="htmlVersion" class="html-version">HTML v20261024-unified-status-v10</small></details>
 </div>
 
 <div class="card">
@@ -598,6 +605,7 @@ function clearLiveStatus() {
     document.getElementById('dataAge').style.color = '#555';
     document.getElementById('espnowStatus').innerText = '不明（BLE未接続）';
     document.getElementById('espnowStatus').style.color = 'orange';
+    refreshUnifiedStatus();
     setControlsEnabled(false);
 }
 
@@ -605,9 +613,27 @@ window.addEventListener('load', clearLiveStatus);
 
 function pageIsActive() { return document.visibilityState !== 'hidden'; }
 
+// Display a single, readable communication summary while preserving the
+// separate BLE and ESP-NOW statuses for diagnostics and safe reconnection.
+function refreshUnifiedStatus() {
+    const summary = document.getElementById('connectionSummary');
+    const ble = document.getElementById('statusTxt');
+    const sensor = document.getElementById('espnowStatus');
+    const connected = !!(cmdCharacteristic && bleDevice?.gatt?.connected);
+    if (!connected) {
+        summary.innerText = 'BLE ' + (ble.innerText || '未接続');
+        summary.style.color = ble.style.color || '#b56a00';
+        return;
+    }
+    const unknown = !sensor.innerText || sensor.innerText.includes('BLE未接続');
+    summary.innerText = unknown ? 'BLE接続済・子機確認中' :
+        'BLE接続済・子機 ' + sensor.innerText;
+    summary.style.color = unknown ? '#b56a00' : sensor.style.color;
+}
 function setConnectionStatus(message, color = 'black') {
     document.getElementById('statusTxt').innerText = message;
     document.getElementById('statusTxt').style.color = color;
+    refreshUnifiedStatus();
 }
 
 function updateConnectionButtons() {
@@ -887,6 +913,7 @@ function handleStatusUpdate(event) {
             statusEl.innerText = '正常（通信中）';
             statusEl.style.color = 'green';
         }
+        refreshUnifiedStatus();
         heaterStopped = parts[3] === '0' && parts[4] === '0';
         sensorLive = {room: roomHealthy ? roomTemp : null, duct: ductHealthy ? ductTemp : null, age: dataAge};
         updateSensorPreview();
