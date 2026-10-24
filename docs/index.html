@@ -32,6 +32,10 @@
         #sensorPanel #sensorConfigFeedback { margin: 7px 0; font-size: 13px; line-height: 1.4; }
         #sensorPanel .flex .btn { min-height: 44px; padding: 9px 5px; }
         #sensorPanel > .card > .btn { padding: 9px 12px; min-height: 44px; margin: 7px 0 4px; }
+        #sensorPanel .sensor-actions { padding: 6px 0 9px; margin-bottom: 10px; border-bottom: 1px solid #ddd; }
+        #sensorPanel .sensor-actions .btn { min-height: 44px; padding: 9px 5px; }
+        #sensorPanel .sensor-actions .sensor-reset { background: #6c757d; box-shadow: 0 4px #4b545c; margin: 7px 0; }
+        #sensorPanel .sensor-actions .sensor-note { margin: 5px 0; }
 
         .card { background: #fff; padding: 15px; margin-bottom: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         h2, h3 { margin-top: 0; }
@@ -62,7 +66,7 @@
 
 <main id="heaterPanel">
 <div class="card">
-    <h3 class="status-heading"><span>現在のステータス</span><small id="htmlVersion" class="html-version">HTML v20261024-sensor-config-v06</small></h3>
+    <h3 class="status-heading"><span>現在のステータス</span><small id="htmlVersion" class="html-version">HTML v20261024-sensor-config-v07</small></h3>
     <p>通信状態: <span id="espnowStatus" style="font-weight:bold; color:orange;">不明（BLE未接続）</span></p>
     <section aria-label="温度履歴">
         <h3>過去60分の温度</h3>
@@ -151,6 +155,15 @@
 <section id="sensorPanel" hidden aria-label="センサー設定画面">
     <div class="card">
         <h3>センサー設定</h3>
+        <div class="sensor-actions" aria-label="センサー設定の送信操作">
+            <div class="flex">
+                <button type="button" class="btn" onclick="readSensorSettings()">設定を読み出す</button>
+                <button type="button" class="btn btn-success" onclick="saveSensorSettings()">子機に保存</button>
+            </div>
+            <button type="button" class="btn sensor-reset" onclick="resetSensorSettings()">初期値へ戻す（確認あり）</button>
+            <p class="sensor-note">受信時刻: <span id="sensorLastAge">--</span> / 設定状態: <span id="sensorConfigStatus">未取得</span></p>
+            <p role="status" aria-live="polite" id="sensorConfigFeedback">接続後に「設定を読み出す」を押してください。</p>
+        </div>
         <p class="sensor-note">測定値は子機の送信時に更新。補正後は保存前のプレビューです。</p>
         <div class="sensor-group">
             <h4>室内温度</h4>
@@ -181,13 +194,6 @@
             <option value="15">15秒</option><option value="30">30秒</option>
             <option value="34">34秒</option><option value="60" selected>60秒（初期値）</option>
         </select>
-        <p class="sensor-note">受信時刻: <span id="sensorLastAge">--</span> / 設定状態: <span id="sensorConfigStatus">未取得</span></p>
-        <p role="status" aria-live="polite" id="sensorConfigFeedback">接続後に「設定を読み出す」を押してください。</p>
-        <div class="flex">
-            <button class="btn" onclick="readSensorSettings()">設定を読み出す</button>
-            <button class="btn btn-success" onclick="saveSensorSettings()">子機に保存</button>
-        </div>
-        <button class="btn" style="background:#6c757d;box-shadow:0 4px #444;" onclick="resetSensorSettings()">初期値へ戻す（確認あり）</button>
         <p class="sensor-note">変更はヒーター停止中のみ。Deep Sleep中は次回起床時に反映されます。</p>
         <details class="sensor-note"><summary>通信エラー時の確認方法</summary><p>応答が確認できない場合は「設定を読み出す」で子機の保存値を確認してください。</p></details>
     </div>
