@@ -27,7 +27,9 @@ const context = vm.createContext({
         pendingTimers.set(id, { callback, delay });
         return id;
     },
-    clearTimeout: id => pendingTimers.delete(id)
+    clearTimeout: id => pendingTimers.delete(id),
+    setInterval: () => 1,
+    clearInterval: () => {}
 });
 vm.runInContext(script, context);
 const run = code => vm.runInContext(code, context);
