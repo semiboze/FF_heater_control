@@ -103,7 +103,7 @@
     <p>再点火までの待機: <strong><span id="cooldownRemain">--</span></strong></p>
     <p>自動運転の停止理由: <strong><span id="stopReason">--</span></strong></p>
     <p style="font-size: 0.85em; color: #555;">取得不能のセンサーは、2回連続で正常に取得できると通常の判定に戻ります。ダクト温度を取得できない間は点火を確認できません。</p>
-    <details class="version-detail"><summary>画面バージョン</summary><small id="htmlVersion" class="html-version">HTML v20261024-unified-status-v10</small></details>
+    <details class="version-detail"><summary>画面バージョン</summary><small id="htmlVersion" class="html-version">HTML v20261024-feedback-v11</small></details>
 </div>
 
 <div class="card">
@@ -558,10 +558,21 @@ function cancelAutoStart() {
     autoStartSequence++;
 }
 
-function setCommandFeedback(message, isError = false) {
+// A user-initiated command result is transient. Background history requests
+// must not repeatedly display "command accepted" at the top of the screen.
+let commandFeedbackTimer = null;
+function setCommandFeedback(message, isError = false, autoClear = false) {
+    if (commandFeedbackTimer !== null) clearTimeout(commandFeedbackTimer);
+    commandFeedbackTimer = null;
     const feedback = document.getElementById('commandFeedback');
     feedback.innerText = message;
     feedback.style.color = isError ? 'red' : 'green';
+    if (autoClear && message && !isError) {
+        commandFeedbackTimer = setTimeout(() => {
+            commandFeedbackTimer = null;
+            if (feedback.innerText === message) feedback.innerText = '';
+        }, 30000);
+    }
 }
 
 function finishPendingCommand(accepted) {
@@ -873,8 +884,13 @@ function handleStatusUpdate(event) {
         const accepted = parts[0] === 'ACK';
         if (!accepted && request.command.startsWith('S,')) isSettingsDirty = true;
         finishPendingCommand(accepted);
-        setCommandFeedback(accepted ? 'ESP32が指令を受け付けました。' :
-            'ESP32が指令を受け付けませんでした。設定値とセンサー状態を確認してください。', !accepted);
+        // H,1 is also used by the automatic 60-second history refresh.
+        // Its completion/errors are reported in the history area, not here.
+        if (request.command !== 'H,1') {
+            setCommandFeedback(accepted ? 'ESP32が指令を受け付けました。' :
+                'ESP32が指令を受け付けませんでした。設定値とセンサー状態を確認してください。',
+                !accepted, accepted);
+        }
         return;
     }
     
@@ -960,14 +976,16 @@ function handleStatusUpdate(event) {
 
 async function sendCommand(cmd) {
     const isStop = cmd === 'B,1' || cmd === 'A,0' || cmd === 'B,STOP';
+    const isHistoryRequest = cmd === 'H,1';
     if (isStop) cancelAutoStart();
     if (!cmdCharacteristic || !bleDevice?.gatt.connected) {
-        setCommandFeedback('ESP32と接続されていません。', true);
+        if (!isHistoryRequest) setCommandFeedback('ESP32と接続されていません。', true);
         return false;
     }
     if (pendingCommand) {
         if (!isStop) {
-            setCommandFeedback('前の操作の応答を待っています。しばらく待ってから操作してください。', true);
+            if (!isHistoryRequest)
+                setCommandFeedback('前の操作の応答を待っています。しばらく待ってから操作してください。', true);
             return false;
         }
         if (pendingCommand.command === cmd) return pendingCommand.response;
@@ -979,7 +997,7 @@ async function sendCommand(cmd) {
     const response = new Promise(resolve => { request.resolve = resolve; });
     request.response = response;
     pendingCommand = request;
-    setCommandFeedback('ESP32の応答を確認しています。');
+    if (!isHistoryRequest) setCommandFeedback('ESP32の応答を確認しています。');
     const writeOperation = gattWriteQueue.then(async () => {
         if (pendingCommand !== request) return;
         if (!bleDevice?.gatt.connected || cmdCharacteristic !== characteristic) throw new Error('BLE未接続');
@@ -987,14 +1005,16 @@ async function sendCommand(cmd) {
         request.timeout = setTimeout(() => {
             if (pendingCommand !== request) return;
             finishPendingCommand(false);
-            setCommandFeedback('ESP32から応答がありません。操作結果を確認してください。', true);
+            if (!isHistoryRequest)
+                setCommandFeedback('ESP32から応答がありません。操作結果を確認してください。', true);
         }, COMMAND_RESPONSE_TIMEOUT_MS);
         await characteristic.writeValue(new TextEncoder().encode(cmd));
     });
     gattWriteQueue = writeOperation.catch(e => {
         if (pendingCommand !== request) return;
         finishPendingCommand(false);
-        setCommandFeedback('コマンドを送信できませんでした。設定・操作結果を確認してください。 ' + e.message, true);
+        if (!isHistoryRequest)
+            setCommandFeedback('コマンドを送信できませんでした。設定・操作結果を確認してください。 ' + e.message, true);
     });
     return await response;
 }
