@@ -672,6 +672,7 @@ function invalidateBleSession(disconnectDevice = false) {
     lastAgeReading = null;
     cmdCharacteristic = null;
     clearLiveStatus();
+    setConnectionStatus('未接続', '#b56a00');
     if (disconnectDevice && bleDevice?.gatt) {
         try { bleDevice.gatt.disconnect(); } catch (_) { /* Already disconnected. */ }
     }
