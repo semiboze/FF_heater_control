@@ -15,8 +15,34 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install platformio
-      - run: pio run -e esp32dev
+      - name: Run native protocol and control tests
+        run: |
+          g++ -std=c++17 -Iinclude test/sensor_config_test.cpp -o /tmp/config-test
+          /tmp/config-test
+          g++ -std=c++17 -Iinclude test/sensor_packet_test.cpp -o /tmp/packet-test
+          /tmp/packet-test
+          g++ -std=c++17 -Iinclude test/fallback_test.cpp -o /tmp/fallback-test
+          /tmp/fallback-test
+          node test/ui_status_test.cjs
+          node test/sensor_config_ui_test.cjs
+      - name: Build firmware
+        run: pio run -e esp32dev
+      - name: Prepare USB browser flashing files
+        run: |
+          set -euo pipefail
+          mkdir -p flash-files
+          cp .pio/build/esp32dev/firmware.bin flash-files/firmware_0x10000.bin
+          cp .pio/build/esp32dev/partitions.bin flash-files/partitions_0x8000.bin
+          FW="$HOME/.platformio/packages/framework-arduinoespressif32"
+          BOOTLOADER="$(find "$FW" -type f -name 'bootloader_dio_40m.bin' -print -quit)"
+          BOOTAPP="$(find "$FW" -type f -name 'boot_app0.bin' -print -quit)"
+          test -n "$BOOTLOADER" && test -n "$BOOTAPP"
+          cp "$BOOTLOADER" flash-files/bootloader_0x1000.bin
+          cp "$BOOTAPP" flash-files/boot_app0_0xe000.bin
+          printf '%s\\n' 'ESP32 classic, USB flashing. DIY mode: https://espressif.github.io/esp-launchpad/' '0x1000 bootloader_0x1000.bin' '0x8000 partitions_0x8000.bin' '0xe000 boot_app0_0xe000.bin' '0x10000 firmware_0x10000.bin' 'Never erase flash if you want to keep Preferences NVS.' > flash-files/FLASH_INSTRUCTIONS.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: controller-firmware
-          path: .pio/build/esp32dev/firmware.bin
+          name: controller-esp32dev-browser-flash
+          path: flash-files/
+          if-no-files-found: error
+          retention-days: 14
