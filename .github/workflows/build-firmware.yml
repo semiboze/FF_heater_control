@@ -1,0 +1,22 @@
+name: Build ESP32 web flash
+on:
+  push:
+    branches:
+      - feature/sensor-config-v05-20261024
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install platformio
+      - run: pio run -e esp32dev
+      - uses: actions/upload-artifact@v4
+        with:
+          name: controller-firmware
+          path: .pio/build/esp32dev/firmware.bin
