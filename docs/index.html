@@ -51,6 +51,12 @@
         #sensorPanel .sensor-actions .btn { min-height: 44px; padding: 9px 5px; }
         #sensorPanel .sensor-actions .sensor-reset { background: #6c757d; box-shadow: 0 4px #4b545c; margin: 7px 0; }
         #sensorPanel .sensor-actions .sensor-note { margin: 5px 0; }
+        /* BLE diagnostic log: kept compact, accessible when offline. */
+        #bleDiagnostic { margin-top: 16px; border-top: 1px solid #ddd; padding-top: 10px; }
+        #bleDiagnostic summary { cursor: pointer; font-weight: bold; padding: 7px 0; }
+        #bleDiagText { white-space: pre-wrap; overflow-wrap: anywhere; overflow-y: auto; max-height: 250px; padding: 8px; margin: 5px 0 9px; background: #f2f4f7; color: #222; border: 1px solid #ccc; border-radius: 5px; font: 11px/1.5 monospace; }
+        #bleDiagnostic .flex button { min-height: 44px; padding: 8px 4px; font-size: 14px; }
+
 
         .card { background: #fff; padding: 15px; margin-bottom: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         h2, h3 { margin-top: 0; }
@@ -123,7 +129,7 @@
     <p>再点火までの待機: <strong><span id="cooldownRemain">--</span></strong></p>
     <p>自動運転の停止理由: <strong><span id="stopReason">--</span></strong></p>
     <p style="font-size: 0.85em; color: #555;">取得不能のセンサーは、2回連続で正常に取得できると通常の判定に戻ります。ダクト温度を取得できない間は点火を確認できません。</p>
-    <details class="version-detail"><summary>画面バージョン</summary><small id="htmlVersion" class="html-version">HTML v20261024-footer-fix-v15</small></details>
+    <details class="version-detail"><summary>画面バージョン</summary><small id="htmlVersion" class="html-version">HTML v20261028-ble-diag-v16</small></details>
     </div>
 </section>
 
@@ -235,6 +241,17 @@
         </select>
         <p class="sensor-note">変更はヒーター停止中のみ。Deep Sleep中は次回起床時に反映されます。</p>
         <details class="sensor-note"><summary>通信エラー時の確認方法</summary><p>応答が確認できない場合は「設定を読み出す」で子機の保存値を確認してください。</p></details>
+
+        <details id="bleDiagnostic">
+            <summary>BLE接続診断ログ（<span id="bleDiagCount">0</span>件）</summary>
+            <p class="sensor-note">直近100件をこのブラウザに保存します。切断中でも閲覧・コピーできます。鍵や温度データは記録しません。</p>
+            <div class="flex">
+                <button type="button" class="btn" data-ble-diagnostics="true" onclick="copyBleDiagnostics()">ログをコピー</button>
+                <button type="button" class="btn" data-ble-diagnostics="true" style="background:#6c757d;box-shadow:0 4px #4b545c" onclick="clearBleDiagnostics()">ログを消去</button>
+            </div>
+            <p id="bleDiagFeedback" class="sensor-note" role="status"></p>
+            <pre id="bleDiagText">記録はありません。</pre>
+        </details>
     </div>
 </section>
 <nav class="bottom-tabs" aria-label="画面切り替え">
@@ -635,6 +652,73 @@ let reconnectAttempt = 0;
 let autoReconnectWanted = false;
 let devicePickerBusy = false;
 
+/* Connection diagnostics: browser-side only; no commands or secrets are recorded. */
+const BLE_DIAG_STORAGE_KEY = 'ffheater-ble-diag-v1';
+const BLE_DIAG_MAX = 100;
+let bleDiagnosticEntries = [];
+let bleConnectedAt = 0;
+let bleStatusNotifications = 0;
+try {
+    const saved = JSON.parse(localStorage.getItem(BLE_DIAG_STORAGE_KEY) || '[]');
+    if (Array.isArray(saved)) bleDiagnosticEntries = saved.slice(-BLE_DIAG_MAX).filter(x =>
+        x && typeof x.at === 'string' && typeof x.event === 'string' && typeof x.detail === 'string');
+} catch (_) { /* Storage may be unavailable in a privacy-focused browser. */ }
+
+function bleErrorMessage(error) {
+    const name = error && typeof error.name === 'string' ? error.name : '';
+    const message = error && typeof error.message === 'string' ? error.message :
+        typeof error === 'string' ? error : '';
+    return [name, message].filter(Boolean).join(': ') || 'エラー情報なし';
+}
+function bleDiagnosticText() {
+    return bleDiagnosticEntries.map(e => e.at + '  ' + e.event + (e.detail ? '  ' + e.detail : '')).join('\n');
+}
+function renderBleDiagnostics() {
+    const count = document.getElementById('bleDiagCount');
+    const text = document.getElementById('bleDiagText');
+    if (count) count.textContent = String(bleDiagnosticEntries.length);
+    if (text) text.textContent = bleDiagnosticText() || '記録はありません。';
+}
+function bleDiag(event, detail = '') {
+    bleDiagnosticEntries.push({at: new Date().toLocaleString('ja-JP', {hour12: false}),
+        event: String(event).slice(0, 55), detail: String(detail).slice(0, 160)});
+    if (bleDiagnosticEntries.length > BLE_DIAG_MAX)
+        bleDiagnosticEntries.splice(0, bleDiagnosticEntries.length - BLE_DIAG_MAX);
+    try { localStorage.setItem(BLE_DIAG_STORAGE_KEY, JSON.stringify(bleDiagnosticEntries)); }
+    catch (_) { /* Continue logging in memory even when storage is unavailable. */ }
+    renderBleDiagnostics();
+}
+async function copyBleDiagnostics() {
+    const payload = 'FF Heater BLE diagnostics v16\n' + bleDiagnosticText();
+    const feedback = document.getElementById('bleDiagFeedback');
+    try {
+        if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('Clipboard API unavailable');
+        await navigator.clipboard.writeText(payload);
+        feedback.textContent = 'ログをコピーしました。';
+        return;
+    } catch (_) {
+        // Fallback for iOS Web Bluetooth browsers where Clipboard API is unavailable.
+        const text = document.createElement('textarea');
+        text.value = payload; text.style.position = 'fixed'; text.style.opacity = '0';
+        document.body.appendChild(text); text.select();
+        let copied = false;
+        try { copied = document.execCommand('copy'); } catch (_) { /* ignore */ }
+        text.remove();
+        feedback.textContent = copied ? 'ログをコピーしました。' :
+            'コピーできませんでした。下のログを長押しして選択してください。';
+    }
+}
+function clearBleDiagnostics() {
+    if (!confirm('BLE診断ログをすべて消去しますか？')) return;
+    bleDiagnosticEntries = [];
+    try { localStorage.removeItem(BLE_DIAG_STORAGE_KEY); } catch (_) { /* ignore */ }
+    renderBleDiagnostics();
+    document.getElementById('bleDiagFeedback').textContent = 'ログを消去しました。';
+}
+renderBleDiagnostics();
+bleDiag('画面読み込み', 'version=v16; visibility=' + document.visibilityState);
+
+
 function cancelAutoStart() {
     autoStartSequence++;
 }
@@ -666,7 +750,7 @@ function finishPendingCommand(accepted) {
 
 function setControlsEnabled(enabled) {
     const buttons = document.querySelectorAll('.card button');
-    buttons.forEach(btn => btn.disabled = !enabled);
+    buttons.forEach(btn => { if (!btn.hasAttribute('data-ble-diagnostics')) btn.disabled = !enabled; });
 }
 
 function clearLiveStatus() {
@@ -752,6 +836,9 @@ function removeStatusListener() {
 }
 
 function invalidateBleSession(disconnectDevice = false) {
+    bleDiag('セッション破棄', 'disconnect=' + disconnectDevice + '; connectedFor=' + (bleConnectedAt ? (Date.now() - bleConnectedAt) + 'ms' : 'n/a') + '; statusNotify=' + bleStatusNotifications);
+    bleConnectedAt = 0;
+    bleStatusNotifications = 0;
     ++connectionGeneration;
     const attempt = connectionAttempt;
     connectionAttempt = null;
@@ -780,6 +867,7 @@ function scheduleReconnect() {
     }
     const delay = RECONNECT_DELAYS_MS[Math.min(reconnectAttempt, RECONNECT_DELAYS_MS.length - 1)];
     ++reconnectAttempt;
+    bleDiag('再接続予約', 'delay=' + delay + 'ms; attempt=' + reconnectAttempt);
     setConnectionStatus(`切断中：${delay / 1000}秒後に自動再接続します`, '#b56a00');
     reconnectTimer = setTimeout(() => {
         reconnectTimer = null;
@@ -789,10 +877,11 @@ function scheduleReconnect() {
 }
 
 function handleBleDisconnect(event) {
-    if (event?.target && event.target !== bleDevice) return;
+    if (event?.target && event.target !== bleDevice) { bleDiag('古い切断イベントを無視'); return; }
     // A delayed disconnect event from an older attempt must not tear down a
     // newer, already connected session using the same BluetoothDevice object.
-    if (bleDevice?.gatt.connected) return;
+    if (bleDevice?.gatt.connected) { bleDiag('切断イベントを無視', 'GATT is connected'); return; }
+    bleDiag('GATT切断イベント', 'visibility=' + document.visibilityState);
     invalidateBleSession();
     scheduleReconnect();
 }
@@ -803,7 +892,8 @@ function reconnectKnownDevice() {
     if (cmdCharacteristic && bleDevice.gatt.connected) return Promise.resolve(true);
     clearReconnectTimer();
     const device = bleDevice;
-    const attempt = { generation: ++connectionGeneration, device };
+    const attempt = { generation: ++connectionGeneration, device, startedAt: Date.now(), stage: 'start' };
+    bleDiag('BLE接続試行', 'id=' + attempt.generation + '; retry=' + reconnectAttempt + '; visibility=' + document.visibilityState);
     connectionAttempt = attempt;
     const cancelled = new Promise((_, reject) => { attempt.cancel = reject; });
     const ensureCurrent = () => {
@@ -817,35 +907,53 @@ function reconnectKnownDevice() {
         BLE_CONNECTION_TIMEOUT_MS);
 
     const connect = (async () => {
+attempt.stage = 'gatt.connect';
+        bleDiag('BLE接続段階', 'gatt.connect');
         const server = await device.gatt.connect();
         ensureCurrent();
+attempt.stage = 'getPrimaryService';
+        bleDiag('BLE接続段階', 'getPrimaryService');
         const service = await server.getPrimaryService(SERVICE_UUID);
         ensureCurrent();
+attempt.stage = 'getCommandCharacteristic';
+        bleDiag('BLE接続段階', 'getCommandCharacteristic');
         const command = await service.getCharacteristic(CHAR_CMD_UUID);
         ensureCurrent();
+attempt.stage = 'getStatusCharacteristic';
+        bleDiag('BLE接続段階', 'getStatusCharacteristic');
         const status = await service.getCharacteristic(CHAR_STATUS_UUID);
         ensureCurrent();
         removeStatusListener();
         statusCharacteristic = status;
         statusNotificationHandler = event => {
             if (connectionGeneration === attempt.generation && bleDevice === device &&
-                statusCharacteristic === status && device.gatt.connected) handleStatusUpdate(event);
+                statusCharacteristic === status && device.gatt.connected) {
+                    ++bleStatusNotifications;
+                    handleStatusUpdate(event);
+                }
         };
         status.addEventListener('characteristicvaluechanged', statusNotificationHandler);
+attempt.stage = 'startStatusNotifications';
+        bleDiag('BLE接続段階', 'startStatusNotifications');
         await status.startNotifications();
         ensureCurrent();
         if (!device.gatt.connected) throw new Error('接続が切れました。');
         cmdCharacteristic = command;
         try {
+            attempt.stage = 'historyNotifications';
+            bleDiag('履歴通知登録開始');
             const history = await service.getCharacteristic(CHAR_HISTORY_UUID);
             ensureCurrent(); historyCharacteristic = history;
             historyHandler = e => { if (connectionGeneration === attempt.generation && historyCharacteristic === history) receiveHistory(e); };
             history.addEventListener('characteristicvaluechanged', historyHandler);
             await history.startNotifications(); ensureCurrent();
+            bleDiag('履歴通知登録成功');
             setTimeout(() => { if (historyCharacteristic === history) requestHistory(); }, 500);
             historyTimer = setInterval(() => { if (pageIsActive()) requestHistory(); }, 60000);
-        } catch (error) { historyMessage('この親機から履歴を取得できません: ' + error.message); }
+        } catch (error) { bleDiag('履歴通知登録失敗', bleErrorMessage(error)); historyMessage('この親機から履歴を取得できません: ' + bleErrorMessage(error)); }
         try {
+            attempt.stage = 'sensorConfig';
+            bleDiag('センサー設定取得開始');
             const config = await service.getCharacteristic(CHAR_SENSOR_CONFIG_UUID);
             ensureCurrent(); sensorConfigCharacteristic = config;
             sensorConfigHandler = event => {
@@ -856,11 +964,17 @@ function reconnectKnownDevice() {
             await config.startNotifications(); ensureCurrent();
             const last = await config.readValue();
             receiveSensorConfig({target: {value: last}});
+            bleDiag('センサー設定取得成功');
         } catch (error) {
-            sensorFeedback('センサー設定機能を取得できません: ' + error.message);
+            bleDiag('センサー設定取得失敗', bleErrorMessage(error));
+            sensorFeedback('センサー設定機能を取得できません: ' + bleErrorMessage(error));
         }
+        bleConnectedAt = Date.now();
+        bleStatusNotifications = 0;
+        bleDiag('BLE接続成功', 'id=' + attempt.generation + '; elapsed=' + (Date.now() - attempt.startedAt) + 'ms');
         reconnectAttempt = 0;
         setConnectionStatus('接続完了 (通信中)', 'blue');
+        setCommandFeedback('');
         setControlsEnabled(true);
         updateSensorActionButtons();
         if (activePanel === 'sensor' && sensorConfigCharacteristic && !sensorDirty && !sensorApplied)
@@ -868,10 +982,15 @@ function reconnectKnownDevice() {
         return true;
     })();
     attempt.promise = Promise.race([connect, cancelled]).catch(error => {
-        if (connectionAttempt !== attempt || connectionGeneration !== attempt.generation) return false;
+        const detail = 'id=' + attempt.generation + '; stage=' + attempt.stage + '; elapsed=' + (Date.now() - attempt.startedAt) + 'ms; error=' + bleErrorMessage(error);
+        if (connectionAttempt !== attempt || connectionGeneration !== attempt.generation) {
+            bleDiag('失効した接続試行の失敗', detail);
+            return false;
+        }
+        bleDiag('BLE接続失敗', detail);
         invalidateBleSession(true);
         scheduleReconnect();
-        setCommandFeedback('Bluetoothに接続できません。自動で再試行します。必要なら接続先を選び直してください。 ' + error.message, true);
+        setCommandFeedback('Bluetoothに接続できません。自動で再試行します。必要なら接続先を選び直してください。 ' + bleErrorMessage(error), true);
         return false;
     }).finally(() => {
         clearTimeout(attempt.timeout);
@@ -896,6 +1015,7 @@ async function selectAndConnectDevice(forceSelection = false) {
     try {
         // Only this user-click path opens a device chooser. Retries reuse the
         // existing permission and BluetoothDevice, never a public MAC address.
+        bleDiag('接続先選択開始');
         const device = await navigator.bluetooth.requestDevice({
             filters: [{ name: 'FF_Heater' }], optionalServices: [SERVICE_UUID]
         });
@@ -904,11 +1024,13 @@ async function selectAndConnectDevice(forceSelection = false) {
             invalidateBleSession(true);
         }
         bleDevice = device;
+        bleDiag('接続先選択成功', 'name=' + (device.name || 'unknown'));
         bleDevice.addEventListener('gattserverdisconnected', handleBleDisconnect);
         autoReconnectWanted = true;
         reconnectAttempt = 0;
         return await reconnectKnownDevice();
     } catch (error) {
+        bleDiag('接続先選択または接続失敗', bleErrorMessage(error));
         if (!cmdCharacteristic) {
             setConnectionStatus('接続先を選択できませんでした。接続ボタンからやり直してください。', 'red');
             if (autoReconnectWanted) scheduleReconnect();
@@ -921,6 +1043,7 @@ async function selectAndConnectDevice(forceSelection = false) {
 }
 
 function handlePageVisibilityChange() {
+    bleDiag('画面状態変更', 'visibility=' + document.visibilityState + '; gatt=' + !!bleDevice?.gatt?.connected);
     if (!pageIsActive()) {
         clearReconnectTimer();
         if (connectionAttempt) invalidateBleSession(true);
