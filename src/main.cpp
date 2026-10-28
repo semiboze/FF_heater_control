@@ -11,6 +11,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include "HeaterControl.h"
+#include "SimulationScenario.h"
 #include "SensorPacket.h"
 
 using ffheater::ReceivedSensor;
@@ -93,6 +94,56 @@ ButtonPulse buttons[] = {{PIN_ON, "電源ON", 0, false}, {PIN_OFF, "電源OFF", 
 
 Preferences prefs;
 ffheater::Controller controller;
+bool simActive = false;
+uint8_t simScenario = 0;
+uint32_t simRealStarted = 0, simLastSample = 0, simVirtualNow = 0;
+uint8_t simSpeed = 60;
+uint32_t simLastEventSecond = 0;
+uint8_t simLastEvent = 0;
+uint32_t simEventSequence = 0;
+uint32_t simElapsedSecond(uint32_t realNow) {
+    return ((realNow - simRealStarted) / 1000UL) * simSpeed;
+}
+uint32_t controlNow(uint32_t realNow) {
+    return simActive ? simVirtualNow : realNow;
+}
+void resetHistory() {
+    historyHead = historyCount = snapshotCount = snapshotIndex = 0;
+    historyStarted = historySending = false;
+}
+void endSimulation() {
+    simActive = false;
+    simScenario = 0;
+    controller = ffheater::Controller{};
+    resetHistory();
+    simLastEvent = 0;
+}
+bool startSimulation(uint8_t scenario, uint8_t speed, uint32_t realNow) {
+    if (simActive || controller.active() || controller.state() != ffheater::HeaterState::OFF
+        || speed != 1 && speed != 10 && speed != 60 || scenario < 1 || scenario > 6)
+        return false;
+    controller = ffheater::Controller{};
+    simActive = true;
+    simScenario = scenario;
+    simSpeed = speed;
+    simRealStarted = realNow;
+    simVirtualNow = 0;
+    simLastSample = 0;
+    simLastEvent = 0;
+    simLastEventSecond = 0;
+    simEventSequence = 0;
+    resetHistory();
+    controller.settings.onTemperature = scenario == 3 ? 5.0f : 0.0f;
+    controller.settings.offTemperature = scenario == 2 ? 20.0f : 10.0f;
+    controller.settings.ductRise = 5.0f;
+    controller.settings.durationMinutes = scenario == 2 ? 30 : 75;
+    const auto first = ffheater::simulation::sample(scenario, 0);
+    controller.receive(first.room, first.duct, 0);
+    controller.receive(first.room, first.duct, 0);
+    controller.startAuto(0);
+    Serial.printf("[SIM] START case=%u speed=%u\n",scenario,speed);
+    return true;
+}
 bool persistedCooldown = false;
 
 #ifdef TARGET_ESP32_S3
@@ -206,26 +257,41 @@ void handleCommands(uint32_t now, ffheater::Command& effect) {
     while (xQueueReceive(commandQueue, &received, 0) == pdTRUE) {
         const String value(received.text);
         bool accepted = true;
-        if (value == "H,1") {
+        if (value.startsWith("X,START,")) {
+            unsigned scenario = 0, speed = 0;
+            char trailing = 0;
+            accepted = sscanf(received.text, "X,START,%u,%u%c", &scenario, &speed, &trailing) == 2
+                && startSimulation(scenario, speed, millis());
+        } else if (value == "X,STOP") {
+            if (simActive) {
+                // Emit OFF to leave any attached output in the safe direction.
+                mergeEffect(controller.stopByUser(now), effect);
+                endSimulation();
+            }
+        } else if (value == "H,1") {
             beginHistory(now);
         } else if (value == "A,0" || value == "B,1" || value == "B,STOP") {
             mergeEffect(controller.stopByUser(now), effect);
         } else if (value == "A,1") {
+            if (simActive) { accepted = false; }
+            else {
             // A fault/stop and an already queued start must not cancel out.
             if (effect == ffheater::Command::OFF) accepted = false;
             else {
                 controller.startAuto(now);
                 startPattern(PATTERN_AUTO);
             }
+            }
         } else if (value == "B,0") {
-            if (effect == ffheater::Command::OFF || buttons[BTN_OFF].high) accepted = false;
+            if (simActive || effect == ffheater::Command::OFF || buttons[BTN_OFF].high) accepted = false;
             else {
                 controller.recordManualOn(now);
                 mergeEffect(ffheater::Command::ON, effect);
             }
         } else if (value == "B,2" || value == "B,3") {
-            triggerButton(value == "B,2" ? BTN_UP : BTN_DOWN);
+            if (simActive) { accepted = false; } else triggerButton(value == "B,2" ? BTN_UP : BTN_DOWN);
         } else if (value.startsWith("S,")) {
+            if (simActive) { accepted = false; acknowledge(received.text, accepted); continue; }
             ffheater::Settings settings;
             unsigned long duration = 0;
             char extra = 0;
@@ -260,9 +326,9 @@ void handleBLENotify(uint32_t now) {
     lastNotifyTime = now;
     const auto& settings = controller.settings;
     // R fields 0..10 are unchanged; fields 11..17 add sensor/fallback details.
-    char message[224];
+    char message[300];
     snprintf(message, sizeof(message),
-        "R,%.1f,%.1f,%u,%u,%lu,%lu,%.1f,%.1f,%.1f,%lu,%u,%u,%u,%ld,%u,%u,%lu",
+        "R,%.1f,%.1f,%u,%u,%lu,%lu,%.1f,%.1f,%.1f,%lu,%u,%u,%u,%ld,%u,%u,%lu,%u,%u,%lu,%u,%lu",
         controller.roomValid(now) ? controller.room.temperature : NAN,
         controller.ductValid(now) ? controller.duct.temperature : NAN,
         controller.active() ? 1U : 0U, static_cast<unsigned>(controller.state()),
@@ -275,7 +341,10 @@ void handleBLENotify(uint32_t now) {
         static_cast<long>(controller.fallbackRemainingSeconds(now)),
         static_cast<unsigned>(controller.ignitionAttempts()),
         static_cast<unsigned>(controller.stopReason()),
-        static_cast<unsigned long>(controller.cooldownRemainingSeconds(now)));
+        static_cast<unsigned long>(controller.cooldownRemainingSeconds(now)),
+        simActive ? 1U : 0U, unsigned(simScenario),
+        static_cast<unsigned long>(simActive ? simElapsedSecond(millis()) : 0),
+        unsigned(simLastEvent), static_cast<unsigned long>(simEventSequence));
     pStatusChar->setValue(message);
     pStatusChar->notify();
 }
@@ -349,19 +418,37 @@ void loop() {
             packet.sourceMac[0], packet.sourceMac[1], packet.sourceMac[2],
             packet.sourceMac[3], packet.sourceMac[4], packet.sourceMac[5],
             packet.data.roomTemp, packet.data.ductTemp);
-        controller.receive(packet.data.roomTemp, packet.data.ductTemp, packet.receivedAt);
+        if (!simActive) controller.receive(packet.data.roomTemp, packet.data.ductTemp, packet.receivedAt);
     }
 
-    const uint32_t now = millis();
+    const uint32_t realNow = millis();
+    if (simActive) {
+        simVirtualNow = simElapsedSecond(realNow) * 1000UL;
+        if (realNow - simLastSample >= 500UL) {
+            simLastSample = realNow;
+            auto sample = ffheater::simulation::sample(simScenario, simElapsedSecond(realNow));
+            if (sample.deliver) controller.receive(sample.room, sample.duct, simVirtualNow);
+        }
+    }
+    const uint32_t now = controlNow(realNow);
     ffheater::Command effect = controller.tick(now);
     handleCommands(now, effect);
-    mergeEffect(controller.tick(now), effect);
+    mergeEffect(controller.tick(controlNow(realNow)), effect);
+    if (simActive && effect != ffheater::Command::NONE) {
+        simLastEvent = effect == ffheater::Command::ON ? 1 : 2;
+        simLastEventSecond = simElapsedSecond(realNow);
+        ++simEventSequence;
+        Serial.printf("[SIM] virtual=%lus action=%s room=%.1f duct=%.1f reason=%u\n",
+            static_cast<unsigned long>(simLastEventSecond), simLastEvent == 1 ? "ON" : "OFF",
+            controller.room.temperature, controller.duct.temperature,
+            unsigned(controller.stopReason()));
+    }
     // Apply once: a same-iteration OFF always wins over ON.
     if (effect == ffheater::Command::OFF) triggerButton(BTN_OFF);
     else if (effect == ffheater::Command::ON) triggerButton(BTN_ON);
 
     const bool cooldown = controller.cooldownActive(now);
-    if (cooldown != persistedCooldown) {
+    if (!simActive && cooldown != persistedCooldown) {
         prefs.putBool("autooffcool", cooldown);
         persistedCooldown = cooldown;
     }
