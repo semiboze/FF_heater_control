@@ -316,14 +316,24 @@ void handleBLEConnection() {
     const bool connected = deviceConnected.load();
     if (connected == oldDeviceConnected) return;
     startPattern(connected ? PATTERN_BLE_CONN : PATTERN_BLE_DISCONN);
-    if (!connected) pServer->getAdvertising()->start();
+    if (!connected) {
+        if (simActive) {
+            controller.stopByUser(controlNow(millis()));
+            triggerButton(BTN_OFF);
+            endSimulation();
+            Serial.println("[SIM] stopped by BLE disconnect");
+        }
+        pServer->getAdvertising()->start();
+    }
     oldDeviceConnected = connected;
 }
 
 uint32_t lastNotifyTime = 0;
 void handleBLENotify(uint32_t now) {
-    if (!deviceConnected.load() || now - lastNotifyTime < 2000) return;
-    lastNotifyTime = now;
+    const uint32_t realNow = now;
+    if (!deviceConnected.load() || realNow - lastNotifyTime < 2000) return;
+    lastNotifyTime = realNow;
+    now = controlNow(realNow);
     const auto& settings = controller.settings;
     // R fields 0..10 are unchanged; fields 11..17 add sensor/fallback details.
     char message[300];
@@ -454,7 +464,7 @@ void loop() {
     }
     updateLedPattern();
     sampleHistory(now);
-    handleBLENotify(now);
-    sendHistory(now);
+    handleBLENotify(realNow);
+    sendHistory(realNow);
     delay(1);
 }
