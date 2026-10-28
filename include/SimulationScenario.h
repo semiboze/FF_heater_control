@@ -1,5 +1,6 @@
 #pragma once
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 
@@ -34,7 +35,8 @@ inline Sample sample(uint8_t scenario, uint32_t second) {
   case 6: points=SENSORS;count=sizeof(SENSORS)/sizeof(SENSORS[0]);break;
  }
  const Point* lo=&points[0]; const Point* hi=&points[count-1];
- for (size_t i=1;i<count;++i) if (second<=uint32_t(points[i].minute)*60) {
+ if (second >= uint32_t(hi->minute)*60) lo=hi;
+ for (size_t i=1;i<count && lo!=hi;++i) if (second<=uint32_t(points[i].minute)*60) {
   lo=&points[i-1];hi=&points[i];break;
  }
  const uint32_t a=uint32_t(lo->minute)*60,b=uint32_t(hi->minute)*60;
