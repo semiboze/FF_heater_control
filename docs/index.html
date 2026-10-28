@@ -91,7 +91,7 @@
 </div>
 <div class="connection-row">
     <p class="connection-summary">通信状態: <strong id="connectionSummary" role="status">BLE未接続</strong></p>
-    <small class="page-version" aria-label="画面のHTMLバージョン">HTML v18</small>
+    <small class="page-version" aria-label="画面のHTMLバージョン">HTML v19-sim</small>
 </div>
 <span id="statusTxt" hidden>未接続</span>
 <span id="espnowStatus" hidden>不明（BLE未接続）</span>
@@ -134,7 +134,7 @@
     <p>再点火までの待機: <strong><span id="cooldownRemain">--</span></strong></p>
     <p>自動運転の停止理由: <strong><span id="stopReason">--</span></strong></p>
     <p style="font-size: 0.85em; color: #555;">取得不能のセンサーは、2回連続で正常に取得できると通常の判定に戻ります。ダクト温度を取得できない間は点火を確認できません。</p>
-    <details class="version-detail"><summary>画面バージョン</summary><small id="htmlVersion" class="html-version">HTML v20261028-version-label-v18</small></details>
+    <details class="version-detail"><summary>画面バージョン</summary><small id="htmlVersion" class="html-version">HTML v20261028-simulation-v19</small></details>
     </div>
 </section>
 
@@ -247,6 +247,28 @@
         <p class="sensor-note">変更はヒーター停止中のみ。Deep Sleep中は次回起床時に反映されます。</p>
         <details class="sensor-note"><summary>通信エラー時の確認方法</summary><p>応答が確認できない場合は「設定を読み出す」で子機の保存値を確認してください。</p></details>
 
+        <details id="simDiagnostic" style="margin:14px 0; border-top:1px solid #ddd; padding-top:10px;">
+            <summary style="font-weight:bold; padding:8px 0;">自動制御シミュレーション（試験専用）</summary>
+            <p class="sensor-note" style="color:#a71d2a;">実ヒーターへのフォトカプラ配線を物理的に外し、GPIO側LEDで出力を確認してください。ソフト側の禁止だけでは安全を保証できません。</p>
+            <label for="simCase">試験内容</label>
+            <select id="simCase">
+                <option value="1">A：設定温度10℃でOFF</option>
+                <option value="2">B：30分経過で強制OFF</option>
+                <option value="3">C：温度下降後に再点火</option>
+                <option value="4">D：点火失敗・3回試行</option>
+                <option value="5">E：通信途絶・150秒停止</option>
+                <option value="6">F：両センサー異常停止</option>
+            </select>
+            <label for="simSpeed">時間倍率</label>
+            <select id="simSpeed"><option value="1">1倍</option><option value="10">10倍</option><option value="60" selected>60倍</option></select>
+            <p id="simStatus" role="status">シミュレーション停止中</p>
+            <div class="flex">
+              <button type="button" class="btn" onclick="startSimulationUi()">試験開始</button>
+              <button type="button" class="btn btn-danger" onclick="stopSimulationUi()">試験終了・OFF</button>
+            </div>
+            <p class="sensor-note">開始できるのは通常の自動運転・ヒーター推定状態がともに停止中の場合です。ESP32再起動後は通常モードに戻ります。</p>
+            <pre id="simEvents" style="white-space:pre-wrap;font:12px/1.5 monospace;max-height:180px;overflow:auto;background:#f3f3f3;padding:8px;">出力記録なし</pre>
+        </details>
         <details id="bleDiagnostic">
             <summary>BLE接続診断ログ（<span id="bleDiagCount">0</span>件）</summary>
             <p class="sensor-note">直近100件をこのブラウザに保存します。切断中でも閲覧・コピーできます。鍵や温度データは記録しません。</p>
@@ -1096,6 +1118,21 @@ function showSensor(tempId, statusId, value, healthy, communicationLost) {
     statusEl.style.color = communicationLost ? 'red' : healthy ? 'green' : '#b56a00';
 }
 
+let lastSimEventSequence = 0;
+let simWasActive = false;
+async function startSimulationUi() {
+    if (!confirm('実ヒーターへの操作配線を外しましたか？ LEDだけで確認します。')) return;
+    const test = document.getElementById('simCase').value;
+    const speed = document.getElementById('simSpeed').value;
+    const ok = await sendCommand('X,START,' + test + ',' + speed);
+    if (ok) {
+        lastSimEventSequence = 0;
+        document.getElementById('simEvents').textContent = '試験を開始しました。';
+    }
+}
+async function stopSimulationUi() {
+    await sendCommand('X,STOP');
+}
 function handleStatusUpdate(event) {
     const parts = new TextDecoder().decode(event.target.value).split(',');
 
@@ -1120,6 +1157,23 @@ function handleStatusUpdate(event) {
     }
     
     if (parts[0] === 'R' && parts.length >= 10) {
+        const simulated = readNumber(parts, 18) === 1;
+        const simCase = readNumber(parts, 19);
+        const simSecond = readNumber(parts, 20);
+        const simEvent = readNumber(parts, 21);
+        const simSequence = readNumber(parts, 22);
+        const simStatus = document.getElementById('simStatus');
+        simStatus.textContent = simulated ? '試験中：シナリオ' + simCase + ' / 仮想経過 ' + simSecond + '秒' :
+            'シミュレーション停止中';
+        simStatus.style.color = simulated ? '#a71d2a' : '#555';
+        if (simulated && simSequence > lastSimEventSequence && simEvent > 0) {
+            const log = document.getElementById('simEvents');
+            const line = '仮想' + simSecond + '秒までに ' + (simEvent === 1 ? 'ON' : 'OFF') + '信号出力';
+            log.textContent = (log.textContent === '出力記録なし' ? '' : log.textContent + '\\n') + line;
+            lastSimEventSequence = simSequence;
+        }
+        if (!simulated && simWasActive) lastSimEventSequence = 0;
+        simWasActive = simulated;
         const rawAge = readNumber(parts, 10);
         const dataAge = rawAge !== null && rawAge >= 0 ? Math.floor(rawAge) : null;
         const now = Date.now();
