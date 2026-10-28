@@ -129,7 +129,7 @@
     <p>再点火までの待機: <strong><span id="cooldownRemain">--</span></strong></p>
     <p>自動運転の停止理由: <strong><span id="stopReason">--</span></strong></p>
     <p style="font-size: 0.85em; color: #555;">取得不能のセンサーは、2回連続で正常に取得できると通常の判定に戻ります。ダクト温度を取得できない間は点火を確認できません。</p>
-    <details class="version-detail"><summary>画面バージョン</summary><small id="htmlVersion" class="html-version">HTML v20261028-ble-diag-v16</small></details>
+    <details class="version-detail"><summary>画面バージョン</summary><small id="htmlVersion" class="html-version">HTML v20261028-ble-diag-v17</small></details>
     </div>
 </section>
 
@@ -900,6 +900,12 @@ function reconnectKnownDevice() {
         if (connectionAttempt !== attempt || connectionGeneration !== attempt.generation || bleDevice !== device)
             throw new Error('古い接続処理です。');
     };
+    // A cancelled Promise.race does not stop the underlying async GATT calls.
+    // Check again after optional-feature errors and before reporting success.
+    const ensureLive = () => {
+        ensureCurrent();
+        if (!device.gatt.connected) throw new Error('GATT接続が切れました。');
+    };
     setConnectionStatus(reconnectAttempt ? '自動再接続中...' : '接続交渉中...');
     setControlsEnabled(false);
     updateConnectionButtons();
@@ -950,7 +956,12 @@ attempt.stage = 'startStatusNotifications';
             bleDiag('履歴通知登録成功');
             setTimeout(() => { if (historyCharacteristic === history) requestHistory(); }, 500);
             historyTimer = setInterval(() => { if (pageIsActive()) requestHistory(); }, 60000);
-        } catch (error) { bleDiag('履歴通知登録失敗', bleErrorMessage(error)); historyMessage('この親機から履歴を取得できません: ' + bleErrorMessage(error)); }
+        } catch (error) {
+            ensureLive(); // A disconnection must not be treated as an optional-feature failure.
+            bleDiag('履歴通知登録失敗', bleErrorMessage(error));
+            historyMessage('この親機から履歴を取得できません: ' + bleErrorMessage(error));
+        }
+        ensureLive();
         try {
             attempt.stage = 'sensorConfig';
             bleDiag('センサー設定取得開始');
@@ -963,12 +974,15 @@ attempt.stage = 'startStatusNotifications';
             config.addEventListener('characteristicvaluechanged', sensorConfigHandler);
             await config.startNotifications(); ensureCurrent();
             const last = await config.readValue();
+            ensureLive();
             receiveSensorConfig({target: {value: last}});
             bleDiag('センサー設定取得成功');
         } catch (error) {
+            ensureLive(); // Do not resurrect an invalidated connection.
             bleDiag('センサー設定取得失敗', bleErrorMessage(error));
             sensorFeedback('センサー設定機能を取得できません: ' + bleErrorMessage(error));
         }
+        ensureLive();
         bleConnectedAt = Date.now();
         bleStatusNotifications = 0;
         bleDiag('BLE接続成功', 'id=' + attempt.generation + '; elapsed=' + (Date.now() - attempt.startedAt) + 'ms');
