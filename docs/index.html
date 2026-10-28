@@ -689,7 +689,7 @@ function bleDiag(event, detail = '') {
     renderBleDiagnostics();
 }
 async function copyBleDiagnostics() {
-    const payload = 'FF Heater BLE diagnostics v16\n' + bleDiagnosticText();
+    const payload = 'FF Heater BLE diagnostics v17\n' + bleDiagnosticText();
     const feedback = document.getElementById('bleDiagFeedback');
     try {
         if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('Clipboard API unavailable');
@@ -716,7 +716,7 @@ function clearBleDiagnostics() {
     document.getElementById('bleDiagFeedback').textContent = 'ログを消去しました。';
 }
 renderBleDiagnostics();
-bleDiag('画面読み込み', 'version=v16; visibility=' + document.visibilityState);
+bleDiag('画面読み込み', 'version=v17; visibility=' + document.visibilityState);
 
 
 function cancelAutoStart() {
