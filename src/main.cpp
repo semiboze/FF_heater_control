@@ -94,6 +94,7 @@ ButtonPulse buttons[] = {{PIN_ON, "電源ON", 0, false}, {PIN_OFF, "電源OFF", 
 
 Preferences prefs;
 ffheater::Controller controller;
+ffheater::Settings preSimulationSettings;
 bool simActive = false;
 uint8_t simScenario = 0;
 uint32_t simRealStarted = 0, simLastSample = 0, simVirtualNow = 0;
@@ -115,6 +116,7 @@ void endSimulation() {
     simActive = false;
     simScenario = 0;
     controller = ffheater::Controller{};
+    controller.settings = preSimulationSettings;
     resetHistory();
     simLastEvent = 0;
 }
@@ -122,6 +124,7 @@ bool startSimulation(uint8_t scenario, uint8_t speed, uint32_t realNow) {
     if (simActive || controller.active() || controller.state() != ffheater::HeaterState::OFF
         || speed != 1 && speed != 10 && speed != 60 || scenario < 1 || scenario > 6)
         return false;
+    preSimulationSettings = controller.settings;
     controller = ffheater::Controller{};
     simActive = true;
     simScenario = scenario;
@@ -338,7 +341,7 @@ void handleBLENotify(uint32_t now) {
     // R fields 0..10 are unchanged; fields 11..17 add sensor/fallback details.
     char message[300];
     snprintf(message, sizeof(message),
-        "R,%.1f,%.1f,%u,%u,%lu,%lu,%.1f,%.1f,%.1f,%lu,%u,%u,%u,%ld,%u,%u,%lu,%u,%u,%lu,%u,%lu",
+        "R,%.1f,%.1f,%u,%u,%lu,%lu,%.1f,%.1f,%.1f,%lu,%u,%u,%u,%ld,%u,%u,%lu,%u,%u,%lu,%u,%lu,%lu",
         controller.roomValid(now) ? controller.room.temperature : NAN,
         controller.ductValid(now) ? controller.duct.temperature : NAN,
         controller.active() ? 1U : 0U, static_cast<unsigned>(controller.state()),
@@ -354,7 +357,8 @@ void handleBLENotify(uint32_t now) {
         static_cast<unsigned long>(controller.cooldownRemainingSeconds(now)),
         simActive ? 1U : 0U, unsigned(simScenario),
         static_cast<unsigned long>(simActive ? simElapsedSecond(millis()) : 0),
-        unsigned(simLastEvent), static_cast<unsigned long>(simEventSequence));
+        unsigned(simLastEvent), static_cast<unsigned long>(simEventSequence),
+        static_cast<unsigned long>(simLastEventSecond));
     pStatusChar->setValue(message);
     pStatusChar->notify();
 }
