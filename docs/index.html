@@ -1161,6 +1161,7 @@ function handleStatusUpdate(event) {
         const simCase = readNumber(parts, 19);
         const simSecond = readNumber(parts, 20);
         const simEvent = readNumber(parts, 21);
+        const simEventSecond = readNumber(parts, 23);
         const simSequence = readNumber(parts, 22);
         const simStatus = document.getElementById('simStatus');
         simStatus.textContent = simulated ? '試験中：シナリオ' + simCase + ' / 仮想経過 ' + simSecond + '秒' :
@@ -1168,7 +1169,7 @@ function handleStatusUpdate(event) {
         simStatus.style.color = simulated ? '#a71d2a' : '#555';
         if (simulated && simSequence > lastSimEventSequence && simEvent > 0) {
             const log = document.getElementById('simEvents');
-            const line = '仮想' + simSecond + '秒までに ' + (simEvent === 1 ? 'ON' : 'OFF') + '信号出力';
+            const line = '仮想' + simEventSecond + '秒：' + (simEvent === 1 ? 'ON' : 'OFF') + '信号出力';
             log.textContent = (log.textContent === '出力記録なし' ? '' : log.textContent + '\\n') + line;
             lastSimEventSequence = simSequence;
         }
