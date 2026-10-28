@@ -62,7 +62,9 @@
         h2, h3 { margin-top: 0; }
         .status-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
         .html-version { font-size: 11px; font-weight: normal; color: #555; }
-        .connection-summary { text-align:center; font-size: 15px; margin: 7px 0; line-height: 1.4; }
+        .connection-row { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:6px; margin:7px 0; }
+        .connection-summary { text-align:center; font-size: 15px; margin:0; line-height: 1.4; min-width:0; }
+        .page-version { color:#777; font-size:10px; font-weight:normal; white-space:nowrap; font-variant-numeric:tabular-nums; }
         #commandFeedback { margin: 5px 0; line-height: 1.3; }
         #commandFeedback:empty { display: none; }
         .version-detail { margin-top: 10px; color: #666; font-size: 11px; }
@@ -87,7 +89,10 @@
 <button id="connectBtn" class="btn" style="background:#17a2b8; box-shadow:0 4px #117a8b;">ESP32に接続 (BLE)</button>
 <button id="chooseDeviceBtn" class="btn" style="background:#6c757d; box-shadow:0 4px #5a6268;" hidden>接続先を選び直す</button>
 </div>
-<p class="connection-summary">通信状態: <strong id="connectionSummary" role="status">BLE未接続</strong></p>
+<div class="connection-row">
+    <p class="connection-summary">通信状態: <strong id="connectionSummary" role="status">BLE未接続</strong></p>
+    <small class="page-version" aria-label="画面のHTMLバージョン">HTML v18</small>
+</div>
 <span id="statusTxt" hidden>未接続</span>
 <span id="espnowStatus" hidden>不明（BLE未接続）</span>
 <p id="commandFeedback" role="status" aria-live="polite" style="font-size:0.9em;"></p>
@@ -129,7 +134,7 @@
     <p>再点火までの待機: <strong><span id="cooldownRemain">--</span></strong></p>
     <p>自動運転の停止理由: <strong><span id="stopReason">--</span></strong></p>
     <p style="font-size: 0.85em; color: #555;">取得不能のセンサーは、2回連続で正常に取得できると通常の判定に戻ります。ダクト温度を取得できない間は点火を確認できません。</p>
-    <details class="version-detail"><summary>画面バージョン</summary><small id="htmlVersion" class="html-version">HTML v20261028-ble-diag-v17</small></details>
+    <details class="version-detail"><summary>画面バージョン</summary><small id="htmlVersion" class="html-version">HTML v20261028-version-label-v18</small></details>
     </div>
 </section>
 
@@ -689,7 +694,7 @@ function bleDiag(event, detail = '') {
     renderBleDiagnostics();
 }
 async function copyBleDiagnostics() {
-    const payload = 'FF Heater BLE diagnostics v17\n' + bleDiagnosticText();
+    const payload = 'FF Heater BLE diagnostics v18\n' + bleDiagnosticText();
     const feedback = document.getElementById('bleDiagFeedback');
     try {
         if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('Clipboard API unavailable');
@@ -716,7 +721,7 @@ function clearBleDiagnostics() {
     document.getElementById('bleDiagFeedback').textContent = 'ログを消去しました。';
 }
 renderBleDiagnostics();
-bleDiag('画面読み込み', 'version=v17; visibility=' + document.visibilityState);
+bleDiag('画面読み込み', 'version=v18; visibility=' + document.visibilityState);
 
 
 function cancelAutoStart() {
