@@ -12,21 +12,67 @@
 #include <freertos/queue.h>
 #include "HeaterControl.h"
 #include "SensorPacket.h"
+#include "SensorConfig.h"
+#include "EspNowWire.h"
+#include "EspNowKeys.h"
 
 using ffheater::ReceivedSensor;
 struct ReceivedCommand { char text[80]; };
-QueueHandle_t sensorQueue = nullptr;
 QueueHandle_t commandQueue = nullptr;
-const uint8_t SENDER_MAC[] = {0xEC, 0x61, 0x60, 0x93, 0xf8, 0x14};
+struct ConfigResult { ffheater::ConfigFrame frame; uint8_t mac[6]; };
+QueueHandle_t radioQueue = nullptr;
+// The former hard-coded peer MAC was not actually checked against received data.
+// Deliberately fail closed: operator must register the verified sensor STA MAC.
+uint8_t sensorMac[6] = {};
+uint8_t nowRoot[16] = {};
+bool nowKeyReady = false;
+std::atomic<bool> nowPeerReady{false};
+Preferences nowPrefs;
+struct RadioRx {
+    uint8_t sourceMac[6];
+    uint8_t bytes[sizeof(ffnow::SampleFrame)];
+    uint8_t size;
+    uint32_t receivedAt;
+};
+struct RadioSession {
+    uint64_t sensorNonce = 0, parentNonce = 0;
+    uint32_t createdAt = 0;
+    bool pending = false;
+} radioSession;
+uint64_t configSensorNonce = 0, configParentNonce = 0;
+
 
 #define SERVICE_UUID     "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHAR_STATUS_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 #define CHAR_HISTORY_UUID "e93c15d4-f791-4bb1-9daf-88ae6f946be1"
+#define CHAR_SENSOR_CONFIG_UUID "fd0c7757-0e61-45c5-9123-950f6c285c01"
 #define CHAR_CMD_UUID    "8c772be5-e0d0-4251-bb5c-1f6874eb7310"
 BLEServer* pServer = nullptr;
 BLECharacteristic* pStatusChar = nullptr;
 BLECharacteristic* pHistoryChar = nullptr;
 std::atomic<bool> deviceConnected{false};
+BLECharacteristic* pSensorConfigChar = nullptr;
+ffheater::ConfigFrame pendingConfig{};
+bool configPending = false;
+uint32_t configCreatedAt = 0;
+uint32_t configNextId = 0;
+uint8_t configTargetMac[6] = {};
+String configMessage = "CFG,UNKNOWN";
+
+void configNotify(const String& message) {
+    configMessage = message;
+    if (!pSensorConfigChar) return;
+    pSensorConfigChar->setValue(message.c_str());
+    if (deviceConnected.load()) pSensorConfigChar->notify();
+}
+
+void configFail(const char* reason) {
+    const uint32_t requestId = pendingConfig.requestId;
+    configPending = false;
+    configNotify("CFG,FAIL," + String(requestId) + "," + reason);
+}
+
+
 extern ffheater::Controller controller;
 struct HistoryPoint { uint32_t at; int16_t room, duct; };
 HistoryPoint history[61], snapshot[61];
@@ -161,10 +207,15 @@ void updateButtonPulses() {
 }
 
 void OnDataRecv(const uint8_t* mac, const uint8_t* bytes, int len) {
-    if (!sensorQueue) return;
-    ReceivedSensor packet{};
-    if (!ffheater::decodeSensorPacket(mac, bytes, len, millis(), packet)) return;
-    xQueueSend(sensorQueue, &packet, 0);
+    // Wi-Fi callback: short MAC/length check + queue only. Never auto-add peers.
+    if (!nowPeerReady || !radioQueue || !ffnow::allowedMac(mac, sensorMac) || !bytes ||
+        len <= 0 || len > int(sizeof(RadioRx::bytes))) return;
+    RadioRx rx{};
+    memcpy(rx.sourceMac, mac, 6);
+    rx.size = uint8_t(len);
+    memcpy(rx.bytes, bytes, len);
+    rx.receivedAt = millis();
+    xQueueSend(radioQueue, &rx, 0);
 }
 
 class MyServerCallbacks : public BLEServerCallbacks {
@@ -206,7 +257,41 @@ void handleCommands(uint32_t now, ffheater::Command& effect) {
     while (xQueueReceive(commandQueue, &received, 0) == pdTRUE) {
         const String value(received.text);
         bool accepted = true;
-        if (value == "H,1") {
+        if (value == "C,GET" || value == "C,RESET" || value.startsWith("C,SET,")) {
+            accepted = nowPeerReady && !configPending;
+            if (accepted) {
+                ffheater::ConfigFrame next{};
+                next.op = value == "C,GET" ? ffheater::CONFIG_GET : ffheater::CONFIG_SET;
+                if (value.startsWith("C,SET,")) {
+                    int room = 0, duct = 0, sleep = 0;
+                    char trailing = 0;
+                    const int matched = sscanf(received.text, "C,SET,%d,%d,%d%c",
+                                               &room, &duct, &sleep, &trailing);
+                    accepted = matched == 3 && room >= -30 && room <= 30 &&
+                               duct >= -30 && duct <= 30 && sleep >= 0 && sleep <= 65535;
+                    if (accepted) {
+                        next.roomTenths = static_cast<int16_t>(room);
+                        next.ductTenths = static_cast<int16_t>(duct);
+                        next.sleepSeconds = static_cast<uint16_t>(sleep);
+                        accepted = ffheater::validConfig(next);
+                    }
+                } else if (value == "C,RESET") {
+                    next.roomTenths = 0; next.ductTenths = 0; next.sleepSeconds = 60;
+                }
+                if (accepted && next.op == ffheater::CONFIG_SET &&
+                    (controller.active() || controller.state() != ffheater::HeaterState::OFF))
+                    accepted = false;
+                if (accepted) {
+                    ++configNextId;
+                    if (configNextId == 0) ++configNextId;
+                    next.requestId = configNextId;
+                    pendingConfig = next;
+                    configPending = true;
+                    configCreatedAt = now;
+                    configNotify("CFG,WAIT," + String(next.requestId));
+                }
+            }
+        } else if (value == "H,1") {
             beginHistory(now);
         } else if (value == "A,0" || value == "B,1" || value == "B,STOP") {
             mergeEffect(controller.stopByUser(now), effect);
@@ -280,6 +365,153 @@ void handleBLENotify(uint32_t now) {
     pStatusChar->notify();
 }
 
+// USB serial configuration is local-only. Secret and MAC are never taken over BLE.
+String nowSerialLine;
+bool resetArmed = false;
+uint32_t resetArmedAt = 0;
+void printMac(const uint8_t* mac) {
+    for (int i = 0; i < 6; ++i) {
+        if (i) Serial.print(':');
+        if (mac[i] < 16) Serial.print('0');
+        Serial.print(mac[i], HEX);
+    }
+}
+bool heaterStoppedForKeyChange() {
+    return !controller.active() && controller.state() == ffheater::HeaterState::OFF &&
+           !buttons[BTN_ON].high;
+}
+void newNowKey() {
+    if (!heaterStoppedForKeyChange()) { Serial.println("ERROR: stop heater first"); return; }
+    uint8_t next[16] = {};
+    ffnow::randomBytes(next, sizeof(next));
+    if (!ffnow::saveKey(nowPrefs, next)) { Serial.println("ERROR: NVS save failed"); return; }
+    ffnow::printKeyOnce(next);
+    memcpy(nowRoot, next, sizeof(next));
+    nowKeyReady = true;
+    if (nowPeerReady) { nowPeerReady = false; esp_now_deinit(); }
+    Serial.println("Saved. Enter NOW APPLY to restart. Update sensor key too.");
+    memset(next, 0, sizeof(next));
+}
+void handleNowCommand(const String& command) {
+    if (command == "NOW STATUS") {
+        Serial.print("ESP-NOW key: "); Serial.println(nowKeyReady ? "SET" : "NOT SET");
+        Serial.print("Sensor MAC: ");
+        if (nowPrefs.getBytesLength("sensor") == 6) { printMac(sensorMac); Serial.println(); }
+        else Serial.println("NOT SET");
+        Serial.print("Encrypted peer: "); Serial.println(nowPeerReady ? "READY" : "INACTIVE");
+    } else if (command == "NOW INIT") {
+        if (nowKeyReady) { Serial.println("Already initialized. Use NOW RESET for new key."); return; }
+        newNowKey();
+    } else if (command == "NOW RESET") {
+        if (!heaterStoppedForKeyChange()) { Serial.println("ERROR: heater not stopped"); return; }
+        resetArmed = true; resetArmedAt = millis();
+        Serial.println("Confirm within 20s: NOW CONFIRM RESET (old key will stop working)");
+    } else if (command == "NOW CONFIRM RESET") {
+        if (!resetArmed || millis() - resetArmedAt > 20000) {
+            Serial.println("ERROR: confirmation expired"); return;
+        }
+        resetArmed = false;
+        newNowKey();
+    } else if (command.startsWith("NOW SENSOR ")) {
+        if (!heaterStoppedForKeyChange()) { Serial.println("ERROR: stop heater first"); return; }
+        uint8_t mac[6] = {};
+        if (!ffnow::parseMac(command.c_str() + 11, mac)) {
+            Serial.println("ERROR: enter MAC as AA:BB:CC:DD:EE:FF"); return;
+        }
+        if (nowPrefs.putBytes("sensor", mac, 6) != 6) {
+            Serial.println("ERROR: NVS MAC save failed"); return;
+        }
+        if (nowPeerReady) { nowPeerReady = false; esp_now_deinit(); }
+        memcpy(sensorMac, mac, 6);
+        Serial.println("Sensor MAC saved. Enter NOW APPLY to restart.");
+    } else if (command == "NOW APPLY") {
+        if (!heaterStoppedForKeyChange()) { Serial.println("ERROR: heater not stopped"); return; }
+        Serial.println("Restarting controller..."); Serial.flush(); delay(100); ESP.restart();
+    } else if (command.length()) Serial.println("Commands: NOW STATUS / NOW INIT / NOW RESET / NOW CONFIRM RESET / NOW SENSOR <MAC> / NOW APPLY");
+}
+void pollNowSerial() {
+    while (Serial.available()) {
+        char c = char(Serial.read());
+        if (c == '\r') continue;
+        if (c == '\n') {
+            handleNowCommand(nowSerialLine);
+            nowSerialLine = "";
+        } else if (c >= 32 && c <= 126 && nowSerialLine.length() < 90) nowSerialLine += c;
+    }
+}
+void handleRadioPackets() {
+    RadioRx rx{};
+    while (xQueueReceive(radioQueue, &rx, 0) == pdTRUE) {
+        ffnow::HelloFrame hello{};
+        if (ffnow::parse(rx.bytes, rx.size, hello, ffnow::HELLO)) {
+            if (!hello.sensorNonce) continue;
+            radioSession.sensorNonce = hello.sensorNonce;
+            radioSession.parentNonce = ffnow::nonce();
+            radioSession.createdAt = millis();
+            radioSession.pending = true;
+            ffnow::ChallengeFrame challenge{};
+            challenge.sensorNonce = radioSession.sensorNonce;
+            challenge.parentNonce = radioSession.parentNonce;
+            esp_now_send(sensorMac, reinterpret_cast<const uint8_t*>(&challenge), sizeof(challenge));
+            continue;
+        }
+        ffnow::SampleFrame sample{};
+        if (ffnow::parse(rx.bytes, rx.size, sample, ffnow::SAMPLE)) {
+            if (!radioSession.pending || millis() - radioSession.createdAt > 8000 ||
+                !ffnow::matchesChallenge(sample.sensorNonce, sample.parentNonce,
+                    radioSession.sensorNonce, radioSession.parentNonce)) continue;
+            // Consume challenge exactly once, BEFORE decoding temperature.
+            radioSession.pending = false;
+            ReceivedSensor packet{};
+            if (!ffheater::decodeSensorPacket(rx.sourceMac, sample.sensorData,
+                sizeof(sample.sensorData), rx.receivedAt, packet)) continue;
+            Serial.printf("Encrypted sensor RX room=%.1f duct=%.1f\n",
+                packet.data.roomTemp, packet.data.ductTemp);
+            controller.receive(packet.data.roomTemp, packet.data.ductTemp, packet.receivedAt);
+            if (configPending && millis() - configCreatedAt < 600000UL) {
+                if (pendingConfig.op == ffheater::CONFIG_SET &&
+                    (controller.active() || controller.state() != ffheater::HeaterState::OFF)) {
+                    configFail("NOT_OFF");
+                } else {
+                    ffnow::ConfigSecureFrame request{};
+                    request.kind = ffnow::CONFIG;
+                    request.sensorNonce = sample.sensorNonce;
+                    request.parentNonce = sample.parentNonce;
+                    request.config = pendingConfig;
+                    const esp_err_t tx = esp_now_send(sensorMac,
+                        reinterpret_cast<const uint8_t*>(&request), sizeof(request));
+                    if (tx == ESP_OK) {
+                        configSensorNonce = sample.sensorNonce;
+                        configParentNonce = sample.parentNonce;
+                        memcpy(configTargetMac, sensorMac, 6);
+                    }
+                }
+            }
+            continue;
+        }
+        ffnow::ConfigSecureFrame report{};
+        if (ffnow::parse(rx.bytes, rx.size, report, ffnow::REPORT)) {
+            if (!configPending || report.sensorNonce != configSensorNonce ||
+                report.parentNonce != configParentNonce ||
+                report.config.requestId != pendingConfig.requestId ||
+                !ffnow::allowedMac(rx.sourceMac, configTargetMac) ||
+                report.config.magic != ffheater::CONFIG_MAGIC ||
+                report.config.version != ffheater::CONFIG_VERSION ||
+                report.config.op != ffheater::CONFIG_REPORT) continue;
+            const auto& c = report.config;
+            if (c.status == ffheater::CONFIG_OK && ffheater::validConfig(c) &&
+                (pendingConfig.op == ffheater::CONFIG_GET ||
+                (c.roomTenths == pendingConfig.roomTenths &&
+                 c.ductTenths == pendingConfig.ductTenths &&
+                 c.sleepSeconds == pendingConfig.sleepSeconds))) {
+                configPending = false;
+                configNotify("CFG,DONE," + String(c.requestId) + "," + String(c.roomTenths) +
+                    "," + String(c.ductTenths) + "," + String(c.sleepSeconds));
+            } else configFail(c.status == ffheater::CONFIG_SAVE_ERROR ? "SAVE" :
+                    c.status == ffheater::CONFIG_BAD_VALUE ? "VALUE" : "MISMATCH");
+        }
+    }
+}
 void setup() {
     Serial.begin(115200);
     if (PIN_LED >= 0) pinMode(PIN_LED, OUTPUT);
@@ -288,9 +520,9 @@ void setup() {
         pinMode(pulse.pin, OUTPUT);
         digitalWrite(pulse.pin, LOW);
     }
-    sensorQueue = xQueueCreate(4, sizeof(ReceivedSensor));
     commandQueue = xQueueCreate(8, sizeof(ReceivedCommand));
-    if (!sensorQueue || !commandQueue) {
+    radioQueue = xQueueCreate(8, sizeof(RadioRx));
+    if (!commandQueue || !radioQueue) {
         Serial.println("Queue allocation failed; outputs remain OFF");
         while (true) delay(1000);
     }
@@ -305,19 +537,29 @@ void setup() {
     persistedCooldown = prefs.getBool("autooffcool", false);
     if (persistedCooldown) controller.restoreCooldown(millis());
 
+    nowPrefs.begin("ffnow-sec", false);
+    nowKeyReady = ffnow::loadKey(nowPrefs, nowRoot);
+    const bool hasSensorMac = nowPrefs.getBytesLength("sensor") == 6 &&
+        nowPrefs.getBytes("sensor", sensorMac, 6) == 6 &&
+        ffnow::validUnicastMac(sensorMac);
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
     esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
-    Serial.printf("FF heater receiver: 20261016-rx1, STA MAC=%s, channel=%d\n",
-        WiFi.macAddress().c_str(), WiFi.channel());
-    if (esp_now_init() == ESP_OK) {
+    Serial.printf("Controller STA MAC=%s, channel=%d\n", WiFi.macAddress().c_str(), WiFi.channel());
+    if (nowKeyReady && hasSensorMac && esp_now_init() == ESP_OK) {
+        uint8_t pmk[16] = {}, lmk[16] = {};
+        const bool derived = ffnow::deriveKeys(nowRoot, pmk, lmk);
+        esp_err_t pmkStatus = derived ? esp_now_set_pmk(pmk) : ESP_FAIL;
         esp_now_peer_info_t peer{};
-        memcpy(peer.peer_addr, SENDER_MAC, 6);
-        peer.channel = 1;
-        peer.encrypt = false;
-        esp_now_add_peer(&peer);
-        esp_now_register_recv_cb(OnDataRecv);
-    } else Serial.println("ESP-NOW init failed");
+        memcpy(peer.peer_addr, sensorMac, 6);
+        peer.channel = 1; peer.ifidx = WIFI_IF_STA; peer.encrypt = true;
+        memcpy(peer.lmk, lmk, 16);
+        nowPeerReady = pmkStatus == ESP_OK && esp_now_add_peer(&peer) == ESP_OK;
+        memset(pmk, 0, sizeof(pmk)); memset(lmk, 0, sizeof(lmk));
+        if (nowPeerReady) esp_now_register_recv_cb(OnDataRecv);
+    }
+    Serial.println(nowPeerReady ? "ESP-NOW v2 encrypted: READY" :
+        "ESP-NOW INACTIVE: enter NOW STATUS/INIT/SENSOR via USB serial");
 
     BLEDevice::init("FF_Heater");
     BLEDevice::setMTU(247);
@@ -329,6 +571,10 @@ void setup() {
     pStatusChar->addDescriptor(new BLE2902());
     pHistoryChar = service->createCharacteristic(CHAR_HISTORY_UUID, BLECharacteristic::PROPERTY_NOTIFY);
     pHistoryChar->addDescriptor(new BLE2902());
+    pSensorConfigChar = service->createCharacteristic(CHAR_SENSOR_CONFIG_UUID,
+        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+    pSensorConfigChar->addDescriptor(new BLE2902());
+    pSensorConfigChar->setValue(configMessage.c_str());
     BLECharacteristic* command = service->createCharacteristic(CHAR_CMD_UUID,
         BLECharacteristic::PROPERTY_WRITE);
     command->setCallbacks(new MyCallbacks());
@@ -343,16 +589,11 @@ void setup() {
 void loop() {
     updateButtonPulses();
     handleBLEConnection();
-    ReceivedSensor packet{};
-    while (xQueueReceive(sensorQueue, &packet, 0) == pdTRUE) {
-        Serial.printf("Sensor RX %02X:%02X:%02X:%02X:%02X:%02X room=%.1f duct=%.1f\n",
-            packet.sourceMac[0], packet.sourceMac[1], packet.sourceMac[2],
-            packet.sourceMac[3], packet.sourceMac[4], packet.sourceMac[5],
-            packet.data.roomTemp, packet.data.ductTemp);
-        controller.receive(packet.data.roomTemp, packet.data.ductTemp, packet.receivedAt);
-    }
+    pollNowSerial();
+    if (nowPeerReady) handleRadioPackets();
 
     const uint32_t now = millis();
+    if (configPending && now - configCreatedAt >= 600000UL) configFail("TIMEOUT");
     ffheater::Command effect = controller.tick(now);
     handleCommands(now, effect);
     mergeEffect(controller.tick(now), effect);
