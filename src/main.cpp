@@ -141,6 +141,33 @@ Preferences prefs;
 ffheater::Controller controller;
 bool persistedCooldown = false;
 
+// USB-only, interactive test mode. It deliberately shares the production
+// Controller instance: only its clock and sensor source are replaced. A reset
+// is required to return to normal operation, so an operator cannot silently
+// leave ESP-NOW control disabled after a test.
+struct Simulation {
+    bool active = false;
+    uint32_t now = 0;
+} simulation;
+
+uint32_t controlNow() { return simulation.active ? simulation.now : millis(); }
+
+void printControlTime(uint32_t now) {
+    if (!simulation.active) {
+        Serial.printf("[REAL %lu ms]", static_cast<unsigned long>(now));
+        return;
+    }
+    const uint32_t seconds = now / 1000UL;
+    Serial.printf("[SIM %02lu:%02lu:%02lu]", static_cast<unsigned long>(seconds / 3600UL),
+        static_cast<unsigned long>((seconds / 60UL) % 60UL),
+        static_cast<unsigned long>(seconds % 60UL));
+}
+
+void logGpio(const char* action, const ButtonPulse& pulse) {
+    printControlTime(controlNow());
+    Serial.printf(" GPIO%d %s: %s\n", pulse.pin, action, pulse.label);
+}
+
 #ifdef TARGET_ESP32_S3
 // GPIO2 is the OFF output on S3: never drive LED patterns on that same pin.
 constexpr int PIN_LED = -1;
@@ -185,16 +212,20 @@ void updateLedPattern() {
 void triggerButton(ButtonType button) {
     if (button == BTN_OFF) {
         // A stop also cancels any ON pulse already in progress.
-        digitalWrite(PIN_ON, LOW);
-        buttons[BTN_ON].high = false;
+        auto& onPulse = buttons[BTN_ON];
+        if (onPulse.high) {
+            digitalWrite(PIN_ON, LOW);
+            onPulse.high = false;
+            logGpio("LOW (cancelled)", onPulse);
+        }
     }
     auto& pulse = buttons[button];
     if (pulse.high) return;
     digitalWrite(pulse.pin, HIGH);
     pulse.high = true;
     pulse.startedAt = millis();
+    logGpio("HIGH", pulse);
     startPattern(static_cast<LedPatternType>(button));
-    Serial.println(pulse.label);
 }
 
 void updateButtonPulses() {
@@ -202,6 +233,7 @@ void updateButtonPulses() {
         if (pulse.high && millis() - pulse.startedAt >= 200) {
             digitalWrite(pulse.pin, LOW);
             pulse.high = false;
+            logGpio("LOW (200ms pulse complete)", pulse);
         }
     }
 }
@@ -256,6 +288,12 @@ void handleCommands(uint32_t now, ffheater::Command& effect) {
     ReceivedCommand received{};
     while (xQueueReceive(commandQueue, &received, 0) == pdTRUE) {
         const String value(received.text);
+        // Simulation is intentionally USB-only. BLE commands must not alter a
+        // test sequence or cause an unexpected button pulse during a test.
+        if (simulation.active) {
+            acknowledge(received.text, false);
+            continue;
+        }
         bool accepted = true;
         if (value == "C,GET" || value == "C,RESET" || value.startsWith("C,SET,")) {
             accepted = nowPeerReady && !configPending;
@@ -429,12 +467,133 @@ void handleNowCommand(const String& command) {
         Serial.println("Restarting controller..."); Serial.flush(); delay(100); ESP.restart();
     } else if (command.length()) Serial.println("Commands: NOW STATUS / NOW INIT / NOW RESET / NOW CONFIRM RESET / NOW SENSOR <MAC> / NOW APPLY");
 }
+
+const char* heaterStateName(ffheater::HeaterState state) {
+    switch (state) {
+        case ffheater::HeaterState::OFF: return "OFF";
+        case ffheater::HeaterState::IGNITING: return "IGNITING";
+        case ffheater::HeaterState::ON: return "ON";
+        case ffheater::HeaterState::UNCONFIRMED: return "UNCONFIRMED";
+    }
+    return "UNKNOWN";
+}
+
+const char* stopReasonName(ffheater::StopReason reason) {
+    switch (reason) {
+        case ffheater::StopReason::NONE: return "NONE";
+        case ffheater::StopReason::USER: return "USER";
+        case ffheater::StopReason::TIMER: return "TIMER";
+        case ffheater::StopReason::BOTH_SENSORS: return "BOTH_SENSORS";
+        case ffheater::StopReason::COMM_TIMEOUT: return "COMM_TIMEOUT";
+        case ffheater::StopReason::IGNITION_FAILED: return "IGNITION_FAILED";
+        case ffheater::StopReason::ROOM_LIMIT: return "ROOM_LIMIT";
+        case ffheater::StopReason::TEMPERATURE: return "TEMPERATURE";
+    }
+    return "UNKNOWN";
+}
+
+void printSimulationStatus() {
+    printControlTime(simulation.now);
+    Serial.printf(" state=%s auto=%s room=%.1f(%s) duct=%.1f(%s) age=%lus attempts=%u stop=%s\n",
+        heaterStateName(controller.state()), controller.active() ? "ON" : "OFF",
+        controller.room.temperature, controller.roomValid(simulation.now) ? "valid" : "invalid",
+        controller.duct.temperature, controller.ductValid(simulation.now) ? "valid" : "invalid",
+        static_cast<unsigned long>(controller.dataAgeSeconds(simulation.now)),
+        static_cast<unsigned>(controller.ignitionAttempts()), stopReasonName(controller.stopReason()));
+}
+
+void applySimulationCommand(ffheater::Command command) {
+    if (command == ffheater::Command::NONE) return;
+    printControlTime(simulation.now);
+    Serial.printf(" control decision: %s\n", command == ffheater::Command::ON ? "ON" : "OFF");
+    triggerButton(command == ffheater::Command::ON ? BTN_ON : BTN_OFF);
+}
+
+void tickSimulation() { applySimulationCommand(controller.tick(simulation.now)); }
+
+void startSimulation() {
+    if (controller.active() || controller.state() != ffheater::HeaterState::OFF ||
+        buttons[BTN_ON].high || buttons[BTN_OFF].high || configPending) {
+        Serial.println("ERROR: stop normal control and wait for button pulses/configuration first.");
+        return;
+    }
+    const ffheater::Settings settings = controller.settings;
+    controller = ffheater::Controller{};
+    controller.settings = settings;
+    simulation.active = true;
+    simulation.now = 0;
+    Serial.println("SIMULATION ENABLED: ESP-NOW measurements are ignored by control until reboot.");
+    Serial.println("Enter SIM TEMP <room> <duct> twice, then SIM AUTO START. Use nan for a failed sensor.");
+    printSimulationStatus();
+}
+
+bool parseTwoTemperatures(const String& command, float& room, float& duct) {
+    char extra = 0;
+    return sscanf(command.c_str(), "SIM TEMP %f %f %c", &room, &duct, &extra) == 2 &&
+        (!std::isfinite(room) || (room >= -100.0f && room <= 100.0f)) &&
+        (!std::isfinite(duct) || (duct >= -100.0f && duct <= 300.0f));
+}
+
+void handleSimulationCommand(const String& command) {
+    if (command == "SIM HELP") {
+        Serial.println("SIM START | SIM TEMP <room> <duct> | SIM AUTO START | SIM AUTO STOP");
+        Serial.println("SIM ADVANCE <seconds> (no packet: tests communication timeout) | SIM STATUS | SIM RESTART");
+        return;
+    }
+    if (command == "SIM START") { startSimulation(); return; }
+    if (!simulation.active) {
+        Serial.println("Simulation is off. Enter SIM START first (SIM HELP for commands).");
+        return;
+    }
+    if (command == "SIM STATUS") { printSimulationStatus(); return; }
+    if (command == "SIM RESTART") {
+        Serial.println("Restarting: normal ESP-NOW control will resume after boot.");
+        Serial.flush(); delay(100); ESP.restart();
+        return;
+    }
+    if (command == "SIM AUTO START") {
+        controller.startAuto(simulation.now);
+        tickSimulation();
+        printSimulationStatus();
+        return;
+    }
+    if (command == "SIM AUTO STOP") {
+        applySimulationCommand(controller.stopByUser(simulation.now));
+        printSimulationStatus();
+        return;
+    }
+    float room = NAN, duct = NAN;
+    if (parseTwoTemperatures(command, room, duct)) {
+        controller.receive(room, duct, simulation.now);
+        printControlTime(simulation.now);
+        Serial.printf(" injected room=%.1f duct=%.1f\n", room, duct);
+        tickSimulation();
+        printSimulationStatus();
+        return;
+    }
+    unsigned long seconds = 0;
+    char extra = 0;
+    if (sscanf(command.c_str(), "SIM ADVANCE %lu %c", &seconds, &extra) == 1 && seconds <= 86400UL) {
+        // Tick once per virtual second. This preserves exact 3-minute timeout,
+        // 5-minute retry, and timer boundaries while deliberately generating no
+        // artificial sensor packets.
+        for (unsigned long i = 0; i < seconds; ++i) {
+            simulation.now += 1000UL;
+            tickSimulation();
+        }
+        printSimulationStatus();
+        return;
+    }
+    Serial.println("Invalid SIM command. Enter SIM HELP.");
+}
+
 void pollNowSerial() {
     while (Serial.available()) {
         char c = char(Serial.read());
         if (c == '\r') continue;
         if (c == '\n') {
-            handleNowCommand(nowSerialLine);
+            if (nowSerialLine.startsWith("SIM")) handleSimulationCommand(nowSerialLine);
+            else handleNowCommand(nowSerialLine);
             nowSerialLine = "";
         } else if (c >= 32 && c <= 126 && nowSerialLine.length() < 90) nowSerialLine += c;
     }
@@ -467,7 +626,12 @@ void handleRadioPackets() {
                 sizeof(sample.sensorData), rx.receivedAt, packet)) continue;
             Serial.printf("Encrypted sensor RX room=%.1f duct=%.1f\n",
                 packet.data.roomTemp, packet.data.ductTemp);
-            controller.receive(packet.data.roomTemp, packet.data.ductTemp, packet.receivedAt);
+            if (!simulation.active) {
+                controller.receive(packet.data.roomTemp, packet.data.ductTemp, packet.receivedAt);
+            } else {
+                printControlTime(simulation.now);
+                Serial.println(" ESP-NOW measurement ignored by simulation control");
+            }
             if (configPending && millis() - configCreatedAt < 600000UL) {
                 if (pendingConfig.op == ffheater::CONFIG_SET &&
                     (controller.active() || controller.state() != ffheater::HeaterState::OFF)) {
@@ -592,19 +756,28 @@ void loop() {
     pollNowSerial();
     if (nowPeerReady) handleRadioPackets();
 
-    const uint32_t now = millis();
-    if (configPending && now - configCreatedAt >= 600000UL) configFail("TIMEOUT");
-    ffheater::Command effect = controller.tick(now);
-    handleCommands(now, effect);
-    mergeEffect(controller.tick(now), effect);
-    // Apply once: a same-iteration OFF always wins over ON.
-    if (effect == ffheater::Command::OFF) triggerButton(BTN_OFF);
-    else if (effect == ffheater::Command::ON) triggerButton(BTN_ON);
+    const uint32_t now = controlNow();
+    if (configPending && millis() - configCreatedAt >= 600000UL) configFail("TIMEOUT");
+    if (!simulation.active) {
+        ffheater::Command effect = controller.tick(now);
+        handleCommands(now, effect);
+        mergeEffect(controller.tick(now), effect);
+        // Apply once: a same-iteration OFF always wins over ON.
+        if (effect == ffheater::Command::OFF) triggerButton(BTN_OFF);
+        else if (effect == ffheater::Command::ON) triggerButton(BTN_ON);
+    } else {
+        // BLE commands are rejected in handleCommands; call it to drain its
+        // queue without permitting a queued command to leak into normal mode.
+        ffheater::Command ignored = ffheater::Command::NONE;
+        handleCommands(now, ignored);
+    }
 
-    const bool cooldown = controller.cooldownActive(now);
-    if (cooldown != persistedCooldown) {
-        prefs.putBool("autooffcool", cooldown);
-        persistedCooldown = cooldown;
+    if (!simulation.active) {
+        const bool cooldown = controller.cooldownActive(now);
+        if (cooldown != persistedCooldown) {
+            prefs.putBool("autooffcool", cooldown);
+            persistedCooldown = cooldown;
+        }
     }
     updateLedPattern();
     sampleHistory(now);
